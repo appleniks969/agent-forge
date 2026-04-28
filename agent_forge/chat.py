@@ -20,7 +20,13 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
+
+try:
+    __version__ = _pkg_version("agent-forge")
+except PackageNotFoundError:  # not installed (e.g. running from a source checkout without `pip install -e .`)
+    __version__ = "0+unknown"
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -30,13 +36,10 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.styles import Style as PtkStyle
 
 from .context import ContextWindow
-from .loop import (
-    AgentResult, DoneAgentEvent, TextDeltaAgentEvent, ThinkingDeltaAgentEvent,
-    TurnStartEvent, make_config, agent_loop,
-)
+from .loop import AgentResult, DoneAgentEvent, agent_loop, make_config
 from .prompts import build_system_prompt
 from .provider import DEFAULT_MODEL, MODELS, Model, UserMessage
-from .renderer import dim, bold, green, red, yellow, get_console, render_event, print_footer
+from .renderer import dim, bold, green, red, yellow, render_event, print_footer
 from .session import (
     append_message, append_metadata, latest_session_id,
     new_id, resume_session, update_memory,
@@ -120,7 +123,7 @@ async def run_chat(cfg: ChatConfig) -> None:
         ctx.init_from_existing(messages)
 
     # Banner
-    print(f"\n{bold('agent-forge')} {dim('v0.1.0')}")
+    print(f"\n{bold('agent-forge')} {dim(f'v{__version__}')}")
     print(dim(f"  Model: {cfg.model.id} · {cfg.model.context_window//1000}K ctx · /quit /clear /status"))
     print()
 
@@ -223,69 +226,16 @@ async def run_chat(cfg: ChatConfig) -> None:
         # Build initial messages for this turn
         initial_msgs = ctx.build_messages(user_msg)
         abort = asyncio.Event()
-        loop_cfg = _make_cfg()
-        loop_cfg = type(loop_cfg)(
-            **{**loop_cfg.__dict__, "signal": abort}
-        )
+        loop_cfg = _make_cfg()   # captures current `abort` via closure
 
         result: AgentResult | None = None
-        text_buf: list[str] = []
-        thinking_buf: list[str] = []
-        _live = None
-
-        def _stop_live() -> None:
-            nonlocal _live
-            if _live is not None:
-                _live.stop()
-                _live = None
-
-        def _flush_thinking() -> None:
-            if not thinking_buf:
-                return
-            text = "".join(thinking_buf).strip()
-            thinking_buf.clear()
-            if not text:
-                return
-            preview = text.replace("\n", " ")
-            if len(preview) > 300:
-                preview = preview[:297] + "…"
-            print(f"\n  {dim('💭 ' + preview)}", end="", flush=True)
 
         try:
             async for event in agent_loop(loop_cfg, initial_msgs):
-                if isinstance(event, ThinkingDeltaAgentEvent):
-                    thinking_buf.append(event.delta)
-                elif isinstance(event, TextDeltaAgentEvent):
-                    if thinking_buf:
-                        _stop_live()
-                        _flush_thinking()
-                    from rich.live import Live
-                    from rich.markdown import Markdown
-                    text_buf.append(event.delta)
-                    if _live is None:
-                        print()
-                        _live = Live(
-                            Markdown(""),
-                            console=get_console(),
-                            refresh_per_second=15,
-                            transient=False,
-                        )
-                        _live.start()
-                    _live.update(Markdown("".join(text_buf) + " ▌"))
-                elif isinstance(event, DoneAgentEvent):
-                    _flush_thinking()
-                    if _live is not None:
-                        from rich.markdown import Markdown
-                        _live.update(Markdown("".join(text_buf)))
-                        _stop_live()
+                if isinstance(event, DoneAgentEvent):
                     result = event.result
-                    text_buf.clear()
-                else:
-                    _stop_live()
-                    _flush_thinking()
-                    render_event(event, cfg.verbose)
+                render_event(event, cfg.verbose)
         except KeyboardInterrupt:
-            _stop_live()
             print(f"\n{yellow('Interrupted')}")
             abort.set()
 
@@ -294,6 +244,10 @@ async def run_chat(cfg: ChatConfig) -> None:
             session_turns += result.turns
             session_cache_read += result.usage.cache_read
             session_cache_write += result.usage.cache_write
+
+            # First sync: replace heuristic with real API count *before* the footer
+            # so ctx_pct displayed there reflects what the API actually saw.
+            ctx.sync_total_tokens(result.usage.input + result.usage.cache_read)
             tok = ctx.estimate_tokens()
             session_ctx_pct = tok / cfg.model.context_window * 100
             from .provider import TokenUsage as TU
@@ -306,21 +260,23 @@ async def run_chat(cfg: ChatConfig) -> None:
         print()  # blank line after footer
 
         if result:
-            # Persist messages
-            last_idx = len(result.messages) - 1
-            for i, msg in enumerate(result.messages):
-                from .provider import AssistantMessage as AM
-                usage = result.usage if (i == last_idx and isinstance(msg, AM)) else None
+            # Persist messages — AssistantMessage.usage is self-contained now
+            from .provider import AssistantMessage as AM
+            for msg in result.messages:
+                usage = msg.usage if isinstance(msg, AM) else None
                 messages.append(msg)
                 append_message(session_id, msg, usage)
 
-            # Advance ContextWindow
+            # Advance ContextWindow — receive() resets _synced_total because the
+            # window now contains new messages the API hasn't seen yet.
             ctx.receive(
                 user_message=user_msg,
                 assistant_messages=[m for m in result.messages if not isinstance(m, UserMessage)],
                 tool_calls=result.tool_calls,
-                real_usage=result.usage,
             )
+            # Second sync: re-apply the real count so manage_pressure() uses it
+            # rather than falling back to the chars/4 heuristic for the new window.
+            ctx.sync_total_tokens(result.usage.input + result.usage.cache_read)
 
             # Context pressure management
             tier = await ctx.manage_pressure()
@@ -345,57 +301,13 @@ async def _run_single_prompt(cfg: ChatConfig, prompt: str) -> None:
     )
     user_msg = UserMessage(content=prompt)
     result: AgentResult | None = None
-    text_buf: list[str] = []
-    thinking_buf: list[str] = []
-    _live = None
-
-    def _stop_live_sp() -> None:
-        nonlocal _live
-        if _live is not None:
-            _live.stop()
-            _live = None
-
-    def _flush_thinking_sp() -> None:
-        if not thinking_buf:
-            return
-        text = "".join(thinking_buf).strip()
-        thinking_buf.clear()
-        if not text:
-            return
-        preview = text.replace("\n", " ")
-        if len(preview) > 300:
-            preview = preview[:297] + "…"
-        print(f"\n  {dim('💭 ' + preview)}", end="", flush=True)
 
     async for event in agent_loop(loop_cfg, [user_msg]):
-        if isinstance(event, ThinkingDeltaAgentEvent):
-            thinking_buf.append(event.delta)
-        elif isinstance(event, TextDeltaAgentEvent):
-            if thinking_buf:
-                _stop_live_sp()
-                _flush_thinking_sp()
-            from rich.live import Live
-            from rich.markdown import Markdown
-            text_buf.append(event.delta)
-            if _live is None:
-                print()
-                _live = Live(Markdown(""), console=get_console(), refresh_per_second=15, transient=False)
-                _live.start()
-            _live.update(Markdown("".join(text_buf) + " ▌"))
-        elif isinstance(event, DoneAgentEvent):
-            _flush_thinking_sp()
-            if _live is not None:
-                from rich.markdown import Markdown
-                _live.update(Markdown("".join(text_buf)))
-                _stop_live_sp()
+        if isinstance(event, DoneAgentEvent):
             result = event.result
-            text_buf.clear()
-        else:
-            _stop_live_sp()
-            _flush_thinking_sp()
-            render_event(event, cfg.verbose)
+        render_event(event, cfg.verbose)
     if result:
-        ctx_pct = (result.usage.input + result.usage.output) / cfg.model.context_window * 100
+        ctx_pct = (result.usage.input + result.usage.cache_read) / cfg.model.context_window * 100
         print_footer(cfg.model.id, result.usage.cost, result.usage, result.turns, ctx_pct)
 
 
@@ -433,13 +345,21 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(prog="agent-forge", description="Minimal coding agent")
     parser.add_argument("--model", default="claude-sonnet-4-6")
-    parser.add_argument("--thinking", choices=["off", "adaptive", "low", "medium", "high"], default="adaptive")
+    parser.add_argument("--thinking", choices=["off", "adaptive", "low", "medium", "high"], default="medium")
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--continue", dest="continue_session", action="store_true")
     parser.add_argument("--resume", dest="resume_id")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--prompt", help="Run a single prompt (non-interactive)")
+    parser.add_argument(
+        "--debug-stream",
+        action="store_true",
+        help="Log raw provider stream events with monotonic timestamps to stderr (diagnostic).",
+    )
     args = parser.parse_args()
+
+    if args.debug_stream:
+        os.environ["AGENT_FORGE_DEBUG_STREAM"] = "1"
 
     api_key = (
         os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")

@@ -112,14 +112,14 @@ When you change a type or interface, also update these downstream files.
 | `provider.py` → `TokenUsage` fields | `loop.py` (`AgentResult`) · `session.py` (`append_message`) · `renderer.py` (`print_footer`) · `chat.py` |
 | `provider.py` → `ToolDefinition` | `tools.py` (`Tool.definition()`) · `loop.py` (tool_defs in `_stream_one_turn`) |
 | `provider.py` → `Model` | `context.py` (`assess_pressure`) · `loop.py` (`AgentConfig`) · `chat.py` · `autonomous.py` |
-| `provider.py` → `MODELS` | `chat.py` (/model slash command display) · `eval.py` (model fixture) |
-| `context.py` → `ContextWindow` interface | `chat.py` (`ctx.receive()`, `ctx.manage_pressure()`, `ctx.build_messages()`) · `autonomous.py` (not used directly) · `eval.py` |
-| `context.py` → `SystemPrompt` / `SectionName` | `prompts.py` (`build_system_prompt`) · `autonomous.py` (inline sp) · `eval.py` |
-| `context.py` → `PressureTier` / thresholds | `eval.py` (`eval_pressure_tiers`) |
+| `provider.py` → `MODELS` | `chat.py` (/model slash command display) |
+| `context.py` → `ContextWindow` interface | `chat.py` (`ctx.receive()`, `ctx.manage_pressure()`, `ctx.build_messages()`) · `autonomous.py` (not used directly) |
+| `context.py` → `SystemPrompt` / `SectionName` | `prompts.py` (`build_system_prompt`) · `autonomous.py` (inline sp) |
+| `context.py` → `PressureTier` / thresholds | — |
 | `session.py` → JSONL entry format | `append_message()` + `_msg_to_dict()` (write side) · `resume_session()` + `_dict_to_msg()` (read side) — both sides must stay in sync |
-| `loop.py` → any `AgentEvent` type | `renderer.py` (`render_event` handles every branch) · `chat.py` · `autonomous.py` · `eval.py` |
+| `loop.py` → any `AgentEvent` type | `renderer.py` (`render_event` handles every branch) · `chat.py` · `autonomous.py` |
 | `loop.py` → `AgentConfig` fields | `chat.py` (`make_config` call) · `autonomous.py` (`make_config` call) |
-| `loop.py` → `AgentResult` fields | `chat.py` (result handling, session persistence) · `autonomous.py` (`_execute` returns it) · `eval.py` |
+| `loop.py` → `AgentResult` fields | `chat.py` (result handling, session persistence) · `autonomous.py` (`_execute` returns it) |
 | `tools.py` → `Tool` protocol | All 6 tool classes in same file · `loop.py` (`_CwdBoundTool`) |
 | `tools.py` → `ToolRegistry` interface | `loop.py` (`_CwdPatchedRegistry`) · `chat.py` · `autonomous.py` · `prompts.py` |
 | `prompts.py` → `build_system_prompt` signature | `chat.py` (sole caller for REPL) |
@@ -154,26 +154,18 @@ When you change a type or interface, also update these downstream files.
 
 ## Verification
 
-Run these after every change — all unit evals must pass before committing.
+Run these after every change.
 
 ```bash
-# Unit evals (no API key required — runs evals 1-8)
-cd agent_forge
-python eval.py
-
-# Full suite including integration evals 9-10 (requires key)
-ANTHROPIC_API_KEY=sk-ant-... python eval.py
-# or
-CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-... python eval.py
-
 # Install / reinstall the package in editable mode
 uv pip install -e .
 
-# Check imports (no test framework needed — eval.py is the test suite)
+# Check imports
 python -c "import agent_forge; print('ok')"
-```
 
-`eval.py` is the authoritative test suite. It contains 8 unit evals (pure logic, no API key) and 2 integration evals. See the module docstring at the top of `eval.py` for the full list.
+# Smoke-test the CLI
+agent-forge --help
+```
 
 ---
 
@@ -228,6 +220,4 @@ Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig
 
 | Document | When to read it |
 |---|---|
-| `eval.py` | Understanding what each eval proves; adding a new eval |
-| `AFPY-DIFF.md` (project root) | Cross-referencing against the TypeScript `coding-agent-flow` — gap analysis, design decisions that differ intentionally |
 | `pyproject.toml` | Dependency versions, entry point wiring, dev tool config |

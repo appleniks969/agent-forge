@@ -375,7 +375,6 @@ agent_forge/
   renderer.py      ← ANSI helpers, event renderer, turn footer
   chat.py          ← interactive REPL, CLI entry point (composition root)
   autonomous.py    ← AutonomousFlow state machine (composition root)
-eval.py            ← evaluation / test suite (run with: python eval.py)
 pyproject.toml     ← package metadata, dependencies, entry point
 install.sh         ← one-step installer
 AGENTS.md          ← architecture guide for contributors and AI agents
@@ -440,18 +439,6 @@ MODELS["claude-new-model"] = Model(
     reasoning=True,
     cost=ModelCost(input=3.0, output=15.0, cache_read=0.30, cache_write=3.75),
 )
-```
-
-### Run the test suite
-
-```bash
-cd agent_forge
-
-# Unit tests — no API key needed (evals 1–8)
-python eval.py
-
-# Full suite including live API calls (evals 9–10)
-ANTHROPIC_API_KEY=sk-ant-... python eval.py
 ```
 
 ### Dependency rules

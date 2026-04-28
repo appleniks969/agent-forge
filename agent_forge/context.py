@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .provider import (
-    AssistantMessage, Message, Model, SystemPromptSection,
+    AssistantMessage, ImageContent, Message, Model, SystemPromptSection,
     TextContent, ThinkingContent, ToolResultMessage, TokenUsage, UserMessage,
 )
 
@@ -46,8 +46,21 @@ def assess_pressure(tokens: int, model: Model) -> PressureTier:
 
 # ── Token estimation ──────────────────────────────────────────────────────────
 
+def _tool_result_text(msg: ToolResultMessage) -> str:
+    """Return string representation of ToolResultMessage.content for token estimation."""
+    if isinstance(msg.content, str):
+        return msg.content
+    # Structured content (TextContent / ImageContent blocks)
+    parts: list[str] = []
+    for blk in msg.content:
+        if isinstance(blk, TextContent):
+            parts.append(blk.text)
+        elif isinstance(blk, ImageContent):
+            parts.append(f"[image/{blk.media_type}]")
+    return " ".join(parts)
+
 def estimate_tokens(msg: Message) -> int:
-    """Chars / 4 heuristic. Replaced by sync_token_count() after each API call."""
+    """Chars / 4 heuristic. Replaced by sync_total_tokens() after each API call."""
     if isinstance(msg, UserMessage):
         content = msg.content
         if isinstance(content, str):
@@ -59,7 +72,7 @@ def estimate_tokens(msg: Message) -> int:
             total += len(getattr(blk, "text", "") or getattr(blk, "thinking", "") or str(getattr(blk, "arguments", ""))) // 4
         return total
     else:  # ToolResultMessage
-        return len(msg.content) // 4
+        return len(_tool_result_text(msg)) // 4
 
 def estimate_tokens_list(msgs: list[Message]) -> int:
     return sum(estimate_tokens(m) for m in msgs)
@@ -127,7 +140,7 @@ class StratifiedWindowStrategy:
                     stripped = tuple(b for b in msg.content if not isinstance(b, ThinkingContent))
                     if stripped:
                         msgs.append(AssistantMessage(content=stripped, timestamp=msg.timestamp))
-                elif isinstance(msg, ToolResultMessage) and len(msg.content) > _RECENCY_MAX_CHARS:
+                elif isinstance(msg, ToolResultMessage) and isinstance(msg.content, str) and len(msg.content) > _RECENCY_MAX_CHARS:
                     msgs.append(ToolResultMessage(
                         tool_call_id=msg.tool_call_id,
                         content=msg.content[:_RECENCY_MAX_CHARS] + _TRUNC_SUFFIX,
@@ -172,13 +185,16 @@ def evict_p4(msgs: list[Message]) -> list[Message]:
     """Truncate ToolResultMessages > 1KB. Used on historical (non-newest) turns."""
     result: list[Message] = []
     for msg in msgs:
-        if isinstance(msg, ToolResultMessage) and len(msg.content.encode()) > _P4_MAX_BYTES:
-            result.append(ToolResultMessage(
-                tool_call_id=msg.tool_call_id, content=_P4_NOTICE,
-                is_error=msg.is_error, timestamp=msg.timestamp,
-            ))
-        else:
-            result.append(msg)
+        if isinstance(msg, ToolResultMessage):
+            # Only evict string content; structured content (images) is kept as-is.
+            content_bytes = msg.content.encode() if isinstance(msg.content, str) else b""
+            if len(content_bytes) > _P4_MAX_BYTES:
+                result.append(ToolResultMessage(
+                    tool_call_id=msg.tool_call_id, content=_P4_NOTICE,
+                    is_error=msg.is_error, timestamp=msg.timestamp,
+                ))
+                continue
+        result.append(msg)
     return result
 
 # ── CompactionPort protocol ───────────────────────────────────────────────────
@@ -203,6 +219,12 @@ class ContextWindow:
       2. At least 1 turn always kept in the recency window.
       3. ActionLog accumulates one-liner summaries of all evicted turns.
       4. CompactionPort is optional — P3/AGG fall back to P4 if absent.
+
+    Token accounting:
+      estimate_tokens() uses a chars/4 heuristic by default.
+      Call sync_total_tokens(n) after each API response to replace the heuristic
+      with the real API-reported total (input + cache_read). This gives accurate
+      pressure-tier assessment and correct context-% display in the toolbar.
     """
 
     def __init__(
@@ -218,6 +240,7 @@ class ContextWindow:
         self._action_log: list[ActionLogEntry] = []
         self._recent_turns: list[TurnRecord] = []
         self.current_turn: int = 0
+        self._synced_total: int | None = None  # real API token count when available
 
     # ── Build LLM message array ───────────────────────────────────────────────
 
@@ -231,21 +254,19 @@ class ContextWindow:
         user_message: Message,
         assistant_messages: list[Message],
         tool_calls: list,
-        real_usage: TokenUsage | None = None,
     ) -> None:
         """
         Called after each agent turn. Rotates the recency window.
-        real_usage: if provided, use actual API token count (sync_token_count equivalent).
+
+        Token accounting uses the chars/4 heuristic here; call
+        sync_total_tokens() separately with the real API count so that
+        estimate_tokens() stays accurate across turns.
         """
         self.current_turn += 1
-
-        if real_usage is not None and (real_usage.input + real_usage.cache_read) > 0:
-            # Use real API counts for all prior turns — overwrite heuristic estimate
-            total_real = real_usage.input + real_usage.cache_read
-            # Distribute proportionally (simplified: credit to the new turn)
-            turn_tokens = total_real
-        else:
-            turn_tokens = estimate_tokens(user_message) + estimate_tokens_list(assistant_messages)
+        # Reset the synced total — it belongs to the previous full-context state;
+        # the new turn has added messages so we need a fresh sync from the API.
+        self._synced_total = None
+        turn_tokens = estimate_tokens(user_message) + estimate_tokens_list(assistant_messages)
 
         rec = TurnRecord(
             turn=self.current_turn,
@@ -269,7 +290,18 @@ class ContextWindow:
 
     # ── Token estimate ────────────────────────────────────────────────────────
 
+    def sync_total_tokens(self, total: int) -> None:
+        """
+        Replace the heuristic estimate with the real API-reported token count.
+        Call this after each agent turn with (usage.input + usage.cache_read).
+        The value is used by estimate_tokens() until the next receive() resets it.
+        """
+        self._synced_total = total
+
     def estimate_tokens(self) -> int:
+        """Return token estimate. Uses real API count if sync_total_tokens() was called."""
+        if self._synced_total is not None:
+            return self._synced_total
         log_tokens = sum(e.tokens for e in self._action_log)
         recent_tokens = sum(t.tokens for t in self._recent_turns)
         overhead = 20 if log_tokens > 0 else 0
@@ -283,11 +315,17 @@ class ContextWindow:
     # ── P4 in-place eviction ──────────────────────────────────────────────────
 
     def apply_eviction(self) -> None:
-        """Truncate large tool results in all but the newest turn. Zero LLM cost."""
+        """Truncate large tool results in all but the newest turn. Zero LLM cost.
+
+        Resets _synced_total: eviction changes the window so the previous
+        API-reported count is stale; estimate_tokens() will use the heuristic
+        until the next sync_total_tokens() call.
+        """
         for i in range(max(0, len(self._recent_turns) - 1)):
             turn = self._recent_turns[i]
             turn.assistant_messages = evict_p4(turn.assistant_messages)
             turn.tokens = estimate_tokens(turn.user_message) + estimate_tokens_list(turn.assistant_messages)
+        self._synced_total = None   # evicted content changed the window; old API count is stale
 
     # ── Managed pressure ─────────────────────────────────────────────────────
 
@@ -371,6 +409,7 @@ class ContextWindow:
         self._action_log = []
         self._recent_turns = []
         self.current_turn = 0
+        self._synced_total = None
 
 # ── SystemPrompt ──────────────────────────────────────────────────────────────
 

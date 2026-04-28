@@ -26,10 +26,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .context import ContextWindow, SectionName, SystemPrompt
-from .loop import AgentResult, DoneAgentEvent, ThinkingDeltaAgentEvent, agent_loop, make_config
+from .loop import AgentResult, DoneAgentEvent, agent_loop, make_config
 from .prompts import _TOOLS_SECTION
 from .provider import DEFAULT_MODEL, Model, UserMessage, ZERO_USAGE
-from .renderer import dim, render_event
+from .renderer import render_event
 from .tools import default_registry
 
 logger = logging.getLogger(__name__)
@@ -234,29 +234,11 @@ class AutonomousFlow:
         initial_msgs = [user_msg]
 
         result: AgentResult | None = None
-        thinking_buf: list[str] = []
-
-        def _flush_thinking() -> None:
-            if not thinking_buf:
-                return
-            text = "".join(thinking_buf).strip()
-            thinking_buf.clear()
-            if not text:
-                return
-            preview = text.replace("\n", " ")
-            if len(preview) > 300:
-                preview = preview[:297] + "…"
-            print(f"\n  {dim('💭 ' + preview)}", end="", flush=True)
 
         async for event in agent_loop(loop_cfg, initial_msgs):
-            if isinstance(event, ThinkingDeltaAgentEvent):
-                thinking_buf.append(event.delta)
-            elif isinstance(event, DoneAgentEvent):
-                _flush_thinking()
+            if isinstance(event, DoneAgentEvent):
                 result = event.result
-            else:
-                _flush_thinking()
-                render_event(event, verbose=self._cfg.verbose)
+            render_event(event, verbose=self._cfg.verbose)
         return result
 
     # ── Verify ────────────────────────────────────────────────────────────────

@@ -7,15 +7,26 @@ calls → loop appends results back to the message list. Session persistence is
 deliberately excluded (that belongs to chat.py) so the loop stays a pure
 generator that can be tested without disk I/O.
 
-Owns: agent_loop() (the core async generator), all 12 AgentEvent frozen
-      dataclasses, AgentConfig, AgentResult, make_config() (factory that injects
-      cwd into the tool registry), _CwdPatchedRegistry / _CwdBoundTool, retry
-      logic (_retry_delay), tool result truncation (_truncate_tool_result).
+Owns: agent_loop() (the core async generator), all AgentEvent frozen dataclasses,
+      AgentConfig, AgentResult, make_config() (factory that injects cwd into the
+      tool registry), _CwdPatchedRegistry / _CwdBoundTool, retry logic
+      (_retry_delay), tool result truncation (_truncate_tool_result).
+
+AgentEvent types (16):
+  TurnStartEvent, TurnEndEvent
+  ThinkingStartAgentEvent, ThinkingDeltaAgentEvent, ThinkingEndAgentEvent
+  TextStartAgentEvent, TextDeltaAgentEvent, TextEndAgentEvent
+  ToolDeclaredAgentEvent   — LLM committed to a tool call (from stream, before exec)
+  ToolExecutingAgentEvent  — about to call tool.execute()
+  ToolResultAgentEvent     — tool returned
+  ToolBlockedAgentEvent    — hook blocked the call
+  ErrorAgentEvent, AbortedAgentEvent, CompactionAgentEvent, DoneAgentEvent
 
 Policies enforced here:
   - Turn completeness: partial assistant messages are never appended on error/abort.
   - Tool result truncation: results > 50 KB truncated before appending to context.
   - Retry: exponential backoff + jitter, up to 3 attempts per turn, max 30 s.
+  - api_key is encapsulated in AnthropicProvider; AgentConfig.provider carries it.
 """
 from __future__ import annotations
 
@@ -28,11 +39,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .provider import (
-    AssistantMessage, DoneEvent, Message, Model, StreamErrorEvent,
-    SystemPromptSection, TextContent, TextDeltaEvent, ThinkingContent,
-    ThinkingDeltaEvent, ToolCallContent, ToolCallEndEvent, ToolDefinition,
-    ToolResult, ToolResultMessage, TokenUsage, UserMessage, ZERO_USAGE,
     AnthropicProvider,
+    AssistantMessage, ContentBlockEndEvent, ContentBlockStartEvent,
+    DoneEvent, Message, Model, StreamErrorEvent, SystemPromptSection,
+    TextContent, TextDeltaEvent, ThinkingContent, ThinkingDeltaEvent,
+    ToolCallContent, ToolCallEndEvent, ToolDefinition,
+    ToolResult, ToolResultMessage, TokenUsage, UserMessage, ZERO_USAGE,
 )
 from .tools import ToolRegistry
 
@@ -59,9 +71,9 @@ class TurnEndEvent:
     type: str = field(default="turn_end", init=False)
 
 @dataclass(frozen=True)
-class TextDeltaAgentEvent:
-    delta: str
-    type: str = field(default="text_delta", init=False)
+class ThinkingStartAgentEvent:
+    index: int
+    type: str = field(default="thinking_start", init=False)
 
 @dataclass(frozen=True)
 class ThinkingDeltaAgentEvent:
@@ -69,17 +81,40 @@ class ThinkingDeltaAgentEvent:
     type: str = field(default="thinking_delta", init=False)
 
 @dataclass(frozen=True)
-class ToolCallStartAgentEvent:
-    id: str
-    name: str
-    type: str = field(default="tool_call_start", init=False)
+class ThinkingEndAgentEvent:
+    index: int
+    type: str = field(default="thinking_end", init=False)
 
 @dataclass(frozen=True)
-class ToolCallEndAgentEvent:
+class TextStartAgentEvent:
+    index: int
+    type: str = field(default="text_start", init=False)
+
+@dataclass(frozen=True)
+class TextDeltaAgentEvent:
+    delta: str
+    type: str = field(default="text_delta", init=False)
+
+@dataclass(frozen=True)
+class TextEndAgentEvent:
+    index: int
+    type: str = field(default="text_end", init=False)
+
+@dataclass(frozen=True)
+class ToolDeclaredAgentEvent:
+    """LLM has committed to this tool call (emitted during stream, before execution)."""
     id: str
     name: str
     args: dict
-    type: str = field(default="tool_call_end", init=False)
+    type: str = field(default="tool_declared", init=False)
+
+@dataclass(frozen=True)
+class ToolExecutingAgentEvent:
+    """About to call tool.execute() — emitted immediately before the tool runs."""
+    id: str
+    name: str
+    args: dict
+    type: str = field(default="tool_executing", init=False)
 
 @dataclass(frozen=True)
 class ToolResultAgentEvent:
@@ -117,11 +152,41 @@ class DoneAgentEvent:
     type: str = field(default="done", init=False)
 
 AgentEvent = (
-    TurnStartEvent | TurnEndEvent | TextDeltaAgentEvent | ThinkingDeltaAgentEvent |
-    ToolCallStartAgentEvent | ToolCallEndAgentEvent | ToolResultAgentEvent |
-    ToolBlockedAgentEvent | ErrorAgentEvent | AbortedAgentEvent |
+    TurnStartEvent | TurnEndEvent |
+    ThinkingStartAgentEvent | ThinkingDeltaAgentEvent | ThinkingEndAgentEvent |
+    TextStartAgentEvent | TextDeltaAgentEvent | TextEndAgentEvent |
+    ToolDeclaredAgentEvent | ToolExecutingAgentEvent |
+    ToolResultAgentEvent | ToolBlockedAgentEvent |
+    ErrorAgentEvent | AbortedAgentEvent |
     CompactionAgentEvent | DoneAgentEvent
 )
+
+# ── Internal: mutable turn result ─────────────────────────────────────────────
+#
+# _stream_one_turn is an async generator yielding AgentEvents live. It also
+# needs to convey final turn state (assistant message, error, abort) back to
+# agent_loop. We use a mutable _TurnResult passed by reference — the generator
+# fills it before returning; agent_loop reads it after the generator is
+# exhausted. This gives honest async-generator types (no sentinel crossing the
+# boundary) and avoids the `isinstance(ev, _TurnOutcome)` / `break` pattern.
+
+@dataclass
+class _TurnResult:
+    assistant_msg: AssistantMessage | None = None
+    aborted: bool = False
+    error: str | None = None
+
+    @property
+    def usage(self) -> TokenUsage:
+        if self.assistant_msg is not None and self.assistant_msg.usage is not None:
+            return self.assistant_msg.usage
+        return ZERO_USAGE
+
+    @property
+    def tool_calls(self) -> list[ToolCallContent]:
+        if self.assistant_msg is None:
+            return []
+        return [b for b in self.assistant_msg.content if isinstance(b, ToolCallContent)]
 
 # ── ToolCallRecord (for action log) ──────────────────────────────────────────
 
@@ -140,15 +205,13 @@ class ToolCallRecord:
 class AgentConfig:
     model: Model
     system_prompt: list[SystemPromptSection]
-    api_key: str
-    tools: list[Any]               # list[Tool]
+    provider: AnthropicProvider          # carries api_key; replaces bare api_key field
     tool_registry: ToolRegistry
     thinking: str = "off"
     max_turns: int = 50
     max_tokens: int | None = None
     signal: asyncio.Event | None = None
-    hooks: Any | None = None       # Hooks object (optional)
-    debug: bool = False
+    hooks: Any | None = None
 
 @dataclass(frozen=True)
 class AgentResult:
@@ -218,7 +281,6 @@ async def agent_loop(
       - Tool result truncation: results > 50KB truncated before appending to context.
       - Retry: exponential backoff + jitter, up to 3 attempts per turn.
     """
-    provider = AnthropicProvider()
     signal = config.signal
     abort = signal or asyncio.Event()
 
@@ -240,29 +302,23 @@ async def agent_loop(
         # Apply hooks
         messages_for_llm = await _hook_before_llm(config.hooks, conversation, turn_number)
 
-        # Stream one LLM turn with retry
-        outcome = await _stream_one_turn(
-            provider, config, messages_for_llm, turn_number, abort,
-        )
+        # Stream one LLM turn. _stream_one_turn fills `out` by reference;
+        # we consume the generator fully, then read out.
+        out = _TurnResult()
+        async for ev in _stream_one_turn(config, messages_for_llm, turn_number, abort, out):
+            yield ev
 
-        if outcome["aborted"]:
+        if out.aborted:
             yield AbortedAgentEvent()
             return
 
-        if outcome["error"]:
-            # Yield collected error events then return
-            for ev in outcome["events"]:
-                yield ev
-            yield ErrorAgentEvent(error=outcome["error"], retryable=False)
+        if out.error:
+            yield ErrorAgentEvent(error=out.error, retryable=False)
             return
 
-        # Yield all live events from this turn
-        for ev in outcome["events"]:
-            yield ev
-
-        assistant_msg: AssistantMessage = outcome["assistant_msg"]
-        usage: TokenUsage = outcome["usage"]
-        tool_calls: list[ToolCallContent] = outcome["tool_calls"]
+        assistant_msg: AssistantMessage = out.assistant_msg  # type: ignore[assignment]
+        usage: TokenUsage = out.usage
+        tool_calls: list[ToolCallContent] = out.tool_calls
 
         total_usage = total_usage + usage
         conversation.append(assistant_msg)
@@ -287,9 +343,6 @@ async def agent_loop(
 
         # Execute tool calls
         for call in tool_calls:
-            yield ToolCallStartAgentEvent(id=call.id, name=call.name)
-            yield ToolCallEndAgentEvent(id=call.id, name=call.name, args=call.arguments)
-
             blocked, reason = await _hook_before_tool(config.hooks, call, turn_number)
             if blocked:
                 yield ToolBlockedAgentEvent(id=call.id, name=call.name, reason=reason or "blocked")
@@ -306,7 +359,9 @@ async def agent_loop(
                 all_result_messages.append(result_msg)
                 continue
 
-            # Execute
+            # Announce execution (two distinct moments: declared during stream, executing now)
+            yield ToolExecutingAgentEvent(id=call.id, name=call.name, args=call.arguments)
+
             tool = config.tool_registry.get(call.name)
             if tool is None:
                 tool_result = ToolResult(content=f"Unknown tool: {call.name}", is_error=True)
@@ -343,91 +398,98 @@ async def agent_loop(
 
 
 async def _stream_one_turn(
-    provider: AnthropicProvider,
     config: AgentConfig,
     messages: list[Message],
     turn_number: int,
     abort: asyncio.Event,
-) -> dict:
+    out: _TurnResult,
+) -> AsyncGenerator[AgentEvent, None]:
     """
-    Stream one LLM response. Returns a dict with:
-      events, assistant_msg, tool_calls, usage, aborted, error
+    Stream one LLM response, yielding AgentEvents *live* as the provider emits
+    them. Fills `out` by reference on completion (success, abort, or error).
+
+    Block lifecycle events from the provider (ContentBlockStartEvent /
+    ContentBlockEndEvent) are translated to typed agent events:
+      text block open/close   → TextStartAgentEvent / TextEndAgentEvent
+      thinking block open/close → ThinkingStartAgentEvent / ThinkingEndAgentEvent
+      tool_use block close    → ToolDeclaredAgentEvent (with full args)
+
+    Live yielding is what makes the renderer responsive: thinking deltas and
+    text deltas reach the UI as they arrive, not buffered to end-of-turn.
+
+    Retry note: each attempt streams its own deltas live. A retryable error
+    mid-stream emits a clear ErrorAgentEvent so the re-streamed response on
+    the next attempt isn't confusing.
     """
     tool_defs: list[ToolDefinition] = config.tool_registry.definitions()
 
     for attempt in range(_MAX_RETRIES):
-        events: list[AgentEvent] = []
-        tool_calls_in_progress: list[ToolCallContent] = []
-        assistant_msg: AssistantMessage | None = None
-        usage = ZERO_USAGE
-
         try:
-            async for ev in provider.stream(
+            async for ev in config.provider.stream(
                 model=config.model,
                 system=config.system_prompt,
                 messages=messages,
                 tools=tool_defs,
-                api_key=config.api_key,
                 signal=abort,
                 max_tokens=config.max_tokens,
                 thinking=config.thinking,
             ):
                 if abort.is_set():
-                    return {"events": events, "aborted": True, "error": None,
-                            "assistant_msg": None, "tool_calls": [], "usage": ZERO_USAGE}
+                    out.aborted = True
+                    return
 
-                if isinstance(ev, TextDeltaEvent):
-                    events.append(TextDeltaAgentEvent(delta=ev.delta))
+                if isinstance(ev, ContentBlockStartEvent):
+                    if ev.block_type == "thinking":
+                        yield ThinkingStartAgentEvent(index=ev.index)
+                    elif ev.block_type == "text":
+                        yield TextStartAgentEvent(index=ev.index)
+                    # tool_use start: no agent event — ToolDeclaredAgentEvent fires at block end
+
+                elif isinstance(ev, ContentBlockEndEvent):
+                    if ev.block_type == "thinking":
+                        yield ThinkingEndAgentEvent(index=ev.index)
+                    elif ev.block_type == "text":
+                        yield TextEndAgentEvent(index=ev.index)
+
+                elif isinstance(ev, TextDeltaEvent):
+                    yield TextDeltaAgentEvent(delta=ev.delta)
 
                 elif isinstance(ev, ThinkingDeltaEvent):
-                    events.append(ThinkingDeltaAgentEvent(delta=ev.delta))
+                    yield ThinkingDeltaAgentEvent(delta=ev.delta)
 
                 elif isinstance(ev, ToolCallEndEvent):
-                    tool_calls_in_progress.append(ToolCallContent(id=ev.id, name=ev.name, arguments=ev.arguments))
+                    # LLM committed to this tool call — emit before we execute it
+                    yield ToolDeclaredAgentEvent(id=ev.id, name=ev.name, args=ev.arguments)
 
                 elif isinstance(ev, DoneEvent):
-                    assistant_msg = ev.message
-                    usage = ev.usage
-                    if not tool_calls_in_progress:
-                        tool_calls_in_progress = [
-                            blk for blk in (ev.message.content or ())
-                            if isinstance(blk, ToolCallContent)
-                        ]
-                    return {
-                        "events": events,
-                        "assistant_msg": assistant_msg,
-                        "tool_calls": tool_calls_in_progress,
-                        "usage": usage,
-                        "aborted": False,
-                        "error": None,
-                    }
+                    out.assistant_msg = ev.message
+                    return
 
                 elif isinstance(ev, StreamErrorEvent):
                     if ev.retryable and attempt < _MAX_RETRIES - 1:
                         delay = _retry_delay(attempt)
-                        events.append(ErrorAgentEvent(
+                        yield ErrorAgentEvent(
                             error=f"{ev.error} (retry {attempt+1}/{_MAX_RETRIES} in {delay:.0f}s)",
                             retryable=True,
-                        ))
+                        )
                         await asyncio.sleep(delay)
-                        break
-                    return {"events": events, "error": ev.error, "aborted": False,
-                            "assistant_msg": None, "tool_calls": [], "usage": ZERO_USAGE}
+                        break  # retry the outer attempt loop
+                    out.error = ev.error
+                    return
 
         except Exception as exc:
             if attempt < _MAX_RETRIES - 1:
                 delay = _retry_delay(attempt)
-                events.append(ErrorAgentEvent(
+                yield ErrorAgentEvent(
                     error=f"{exc} (retry {attempt+1}/{_MAX_RETRIES} in {delay:.0f}s)",
                     retryable=True,
-                ))
+                )
                 await asyncio.sleep(delay)
                 continue
-            return {"events": events, "error": str(exc), "aborted": False,
-                    "assistant_msg": None, "tool_calls": [], "usage": ZERO_USAGE}
+            out.error = str(exc)
+            return
 
-    return {"events": [], "error": "Max retries exceeded", "aborted": False,
-            "assistant_msg": None, "tool_calls": [], "usage": ZERO_USAGE}
+    out.error = "Max retries exceeded"
 
 
 def make_config(
@@ -442,13 +504,16 @@ def make_config(
     signal: asyncio.Event | None = None,
     hooks: Any | None = None,
 ) -> AgentConfig:
-    """Factory: build AgentConfig, injecting cwd into tool registry execution."""
+    """
+    Factory: build AgentConfig, injecting cwd into tool registry execution
+    and encapsulating api_key inside an AnthropicProvider instance.
+    """
+    provider = AnthropicProvider(api_key)
     patched = _CwdPatchedRegistry(tool_registry, cwd)
     return AgentConfig(
         model=model,
         system_prompt=system_prompt,
-        api_key=api_key,
-        tools=[],
+        provider=provider,
         tool_registry=patched,
         thinking=thinking,
         max_turns=max_turns,

@@ -22,11 +22,11 @@ import json
 import os
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from .provider import (
-    AssistantMessage, Message, TextContent, ThinkingContent,
+    AssistantMessage, ImageContent, Message, TextContent, ThinkingContent,
     ToolCallContent, ToolResultMessage, TokenUsage, UserMessage, ZERO_USAGE,
 )
 
@@ -137,11 +137,9 @@ def resume_session(session_id: str) -> ResumedSession:
                     continue
 
     # Find last compaction entry — only load messages after it
-    last_compaction_idx = -1
     last_compaction_first_kept: str | None = None
-    for i, e in enumerate(entries):
+    for e in entries:
         if e.get("type") == "compaction":
-            last_compaction_idx = i
             last_compaction_first_kept = e.get("first_kept_id")
 
     start_after_id = last_compaction_first_kept
@@ -188,10 +186,23 @@ def _msg_to_dict(msg: Message) -> dict:
                 content.append({"type": "thinking", "thinking": blk.thinking, "signature": blk.signature})
             elif isinstance(blk, ToolCallContent):
                 content.append({"type": "tool_use", "id": blk.id, "name": blk.name, "arguments": blk.arguments})
-        return {"role": "assistant", "content": content, "ts": msg.timestamp}
-    else:
+        d: dict = {"role": "assistant", "content": content, "ts": msg.timestamp,
+                   "stop_reason": msg.stop_reason}
+        if msg.model_id is not None:
+            d["model_id"] = msg.model_id
+        return d
+    else:  # ToolResultMessage
+        if isinstance(msg.content, str):
+            serialized_content: str | list = msg.content
+        else:
+            serialized_content = []
+            for blk in msg.content:
+                if isinstance(blk, TextContent):
+                    serialized_content.append({"type": "text", "text": blk.text})
+                elif isinstance(blk, ImageContent):
+                    serialized_content.append({"type": "image", "media_type": blk.media_type, "data": blk.data})
         return {"role": "tool_result", "tool_call_id": msg.tool_call_id,
-                "content": msg.content, "is_error": msg.is_error, "ts": msg.timestamp}
+                "content": serialized_content, "is_error": msg.is_error, "ts": msg.timestamp}
 
 
 def _dict_to_msg(d: dict) -> Message:
@@ -213,10 +224,27 @@ def _dict_to_msg(d: dict) -> Message:
                 blocks.append(ThinkingContent(thinking=blk["thinking"], signature=blk.get("signature")))
             elif t == "tool_use":
                 blocks.append(ToolCallContent(id=blk["id"], name=blk["name"], arguments=blk.get("arguments", {})))
-        return AssistantMessage(content=tuple(blocks), timestamp=ts)
-    else:
+        return AssistantMessage(
+            content=tuple(blocks),
+            stop_reason=d.get("stop_reason", "end_turn"),
+            usage=None,   # usage stored separately in the outer JSONL entry
+            model_id=d.get("model_id"),
+            timestamp=ts,
+        )
+    else:  # tool_result
+        raw_content = d.get("content", "")
+        if isinstance(raw_content, str):
+            content: str | tuple = raw_content
+        else:
+            parts: list[TextContent | ImageContent] = []
+            for blk in raw_content:
+                if blk.get("type") == "text":
+                    parts.append(TextContent(text=blk["text"]))
+                elif blk.get("type") == "image":
+                    parts.append(ImageContent(media_type=blk["media_type"], data=blk["data"]))
+            content = tuple(parts) if parts else ""
         return ToolResultMessage(
-            tool_call_id=d["tool_call_id"], content=d["content"],
+            tool_call_id=d["tool_call_id"], content=content,
             is_error=d.get("is_error", False), timestamp=ts,
         )
 

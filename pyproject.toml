@@ -1,6 +1,6 @@
 [project]
 name = "agent-forge"
-version = "0.1.0"
+version = "1.0.0"
 description = "Minimal coding agent — 7 flat modules"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,10 +22,6 @@ dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
-
-# Run the eval suite (unit + optional integration):
-#   python eval.py                            # unit evals only (no API key needed)
-#   ANTHROPIC_API_KEY=sk-... python eval.py   # full suite
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
