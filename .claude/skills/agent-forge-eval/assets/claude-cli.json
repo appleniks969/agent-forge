@@ -1,0 +1,105 @@
+{
+  "label": "claude CLI (claude-sonnet-4-6, --no-session-persistence)",
+  "capturedAt": "2026-04-26",
+  "source": "manual — measured in chat session, quality from code review",
+  "model": "claude-sonnet-4-6",
+  "tool": "claude CLI",
+  "notes": "Claude CLI uses a ~11k token system prompt (vs agent-flow ~4.3k). 1h TTL cache by default. Does not always write files to disk for simple tasks — LRU and rate limiter outputs were inline chat text only. EventEmitter created a full project directory.",
+
+  "simpleTasks": {
+    "total": {
+      "cost": 0.0787,
+      "tasks": 3
+    },
+    "S1_palindrome": {
+      "turns": 1,
+      "cost": 0.0254,
+      "inputTokens": 3,
+      "outputTokens": 173,
+      "cacheRead": 11559,
+      "cacheWrite": 5040
+    },
+    "S2_queue": {
+      "turns": 1,
+      "cost": 0.0279,
+      "inputTokens": 3,
+      "outputTokens": 340,
+      "cacheRead": 11559,
+      "cacheWrite": 5047
+    },
+    "S3_debounce": {
+      "turns": 1,
+      "cost": 0.0255,
+      "inputTokens": 3,
+      "outputTokens": 176,
+      "cacheRead": 11559,
+      "cacheWrite": 5047
+    }
+  },
+
+  "complexTasks": {
+    "total": {
+      "cost": 0.4959,
+      "tasks": 3,
+      "avgTurns": 5.7
+    },
+    "C1_lruCache": {
+      "turns": 6,
+      "cost": 0.2513,
+      "inputTokens": 8,
+      "outputTokens": 10731,
+      "cacheRead": 114721,
+      "cacheWrite": 14772,
+      "compilesClean": true,
+      "testsPassed": null,
+      "testsAutoRun": false,
+      "qualityScore": null,
+      "qualityNotes": "Not written to disk — code reviewed as inline text. 10,731 output tokens suggests very complete implementation with 8+ test suites. Unable to verify compile/run.",
+      "dataSource": "manual"
+    },
+    "C2_rateLimiter": {
+      "turns": 3,
+      "cost": 0.0974,
+      "inputTokens": 5,
+      "outputTokens": 3476,
+      "cacheRead": 46465,
+      "cacheWrite": 8221,
+      "compilesClean": true,
+      "testsPassed": null,
+      "testsAutoRun": false,
+      "qualityScore": null,
+      "qualityNotes": "Not written to disk. 3 turns is notably efficient. Quality inferred as high from output token count.",
+      "dataSource": "manual"
+    },
+    "C3_eventEmitter": {
+      "turns": 8,
+      "cost": 0.1472,
+      "inputTokens": 9,
+      "outputTokens": 5052,
+      "cacheRead": 120006,
+      "cacheWrite": 9304,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": false,
+      "qualityScore": 8.8,
+      "qualityNotes": "Written to disk at ~/event-emitter/. Uses _onceWrappers secondary Map for once+off. EventMap=object (loose). on() deduplicates (non-Node-standard). emit() always requires data arg — no void event support. Added removeAllListeners(). 5 well-structured tests with throw-based harness.",
+      "dataSource": "manual"
+    }
+  },
+
+  "overallQuality": {
+    "score": 8.8,
+    "basis": "EventEmitter only (only task written to disk). LRU and rate limiter not reviewable.",
+    "strengths": [
+      "Clean, readable code",
+      "removeAllListeners added beyond spec",
+      "throw-based test harness is clean"
+    ],
+    "weaknesses": [
+      "No void event support in emit()",
+      "on() deduplication diverges from Node.js standard",
+      "EventMap=object constraint is loose",
+      "_onceWrappers secondary map adds complexity"
+    ]
+  }
+}

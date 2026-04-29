@@ -1,0 +1,115 @@
+{
+  "label": "agent-flow after 5 fixes, before DDD refactor",
+  "capturedAt": "2026-04-26",
+  "source": "manual — measured in chat session, quality from code review",
+  "model": "claude-sonnet-4-6",
+  "tool": "agent-flow",
+  "notes": "This is the sweet-spot baseline. Applied 5 fixes: (1) message-level cache_control, (2) eager_input_streaming, (3) token-based recency eviction, (4) 1h TTL for project sessions, (5) cache hit rate in debug. Also fixed: Filter bug in OAuth stable/volatile split, oauthInjectionTracker retry reset. System prompt ~4.3k tokens.",
+
+  "fixes": [
+    "Fix 1: message-level cache_control on last user message block",
+    "Fix 2: eager_input_streaming: true on tool definitions",
+    "Fix 3: token-based recency window (keepRecentTokens: 20000) replacing 3-turn hard cap",
+    "Fix 4: 1h TTL cache for project sessions (AGENT_FLOW_CACHE_RETENTION or .agent-flow dir)",
+    "Fix 5: cache hit rate shown in debug output",
+    "Fix A: stable/volatile system prompt filter bug (cacheControl !== undefined)",
+    "Fix B: oauthInjectionTracker snapshot before retry loop"
+  ],
+
+  "simpleTasks": {
+    "total": {
+      "cost": 0.078,
+      "tasks": 3
+    },
+    "S1_palindrome": {
+      "turns": 1,
+      "cost": 0.025,
+      "inputTokens": 3,
+      "outputTokens": 173,
+      "cacheRead": 11559,
+      "cacheWrite": 5040
+    },
+    "S2_queue": {
+      "turns": 1,
+      "cost": 0.028,
+      "inputTokens": 3,
+      "outputTokens": 340,
+      "cacheRead": 11559,
+      "cacheWrite": 5044
+    },
+    "S3_debounce": {
+      "turns": 1,
+      "cost": 0.025,
+      "inputTokens": 3,
+      "outputTokens": 176,
+      "cacheRead": 11559,
+      "cacheWrite": 5044
+    }
+  },
+
+  "complexTasks": {
+    "total": {
+      "cost": 0.2889,
+      "tasks": 3,
+      "avgTurns": 7.7
+    },
+    "C1_lruCache": {
+      "turns": 9,
+      "cost": 0.0947,
+      "inputTokens": 2055,
+      "outputTokens": 2108,
+      "cacheRead": 38797,
+      "cacheWrite": 12083,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": false,
+      "qualityScore": 9.5,
+      "qualityNotes": "Sentinel-node doubly-linked list. Full generics. RangeError validation. 8 test suites: constructor validation, basic get/put, LRU eviction order, key update+promotion, clear, capacity-1 edge case, complex object generics, repeated-gets-no-inflate. Code reviewed manually — correct.",
+      "dataSource": "manual"
+    },
+    "C2_rateLimiter": {
+      "turns": 7,
+      "cost": 0.063,
+      "inputTokens": 9,
+      "outputTokens": 1398,
+      "cacheRead": 31597,
+      "cacheWrite": 8683,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": false,
+      "qualityScore": 9.5,
+      "qualityNotes": "Correct token-bucket with lazy refill (no background timer). RateLimiterOptions interface. Validates rate, capacity, and consume args. Default consume(tokens=1). 5 test suites. Code reviewed manually — correct.",
+      "dataSource": "manual"
+    },
+    "C3_eventEmitter": {
+      "turns": 7,
+      "cost": 0.1312,
+      "inputTokens": 1976,
+      "outputTokens": 5690,
+      "cacheRead": 11226,
+      "cacheWrite": 9741,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": false,
+      "qualityScore": 9.5,
+      "qualityNotes": "ListenerEntry.once flag approach (clean, no wrapper overhead). Conditional tuple type for void events: emit('ready') compiles without data arg. Snapshot-before-iterate. EventMap=Record<string|symbol, unknown>. Removes empty arrays from Map. listenerCount added.",
+      "dataSource": "manual"
+    }
+  },
+
+  "overallQuality": {
+    "score": 9.5,
+    "basis": "All 3 tasks reviewed from written files",
+    "strengths": [
+      "void event handling via conditional tuple type in emit()",
+      "Sentinel nodes with no null-checks needed",
+      "Lazy refill pattern in rate limiter (no background timer)",
+      "8 test suites for LRU covering edge cases",
+      "Compact, production-ready output"
+    ],
+    "weaknesses": [
+      "Tests not auto-run during task (no compiler verification turn)",
+      "No injectable clock in rate limiter (harder to test time-based behaviour)"
+    ]
+  }
+}

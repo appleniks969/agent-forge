@@ -1,0 +1,45 @@
+{
+  "date": "2026-04-26/27",
+  "model": "claude-sonnet-4-6",
+  "claude-cli": {
+    "s1": { "turns": 1, "cost": 0.025336, "outputTokens": 167, "cacheRead": 11559, "cacheWrite": 5049, "filesOnDisk": false, "quality": 7 },
+    "s2": { "turns": 1, "cost": 0.027460, "outputTokens": 306, "cacheRead": 11559, "cacheWrite": 5056, "filesOnDisk": false, "quality": 7 },
+    "s3": { "turns": 1, "cost": 0.025520, "outputTokens": 177, "cacheRead": 11559, "cacheWrite": 5056, "filesOnDisk": false, "quality": 7 },
+    "c1": { "turns": 3, "cost": 0.181815, "outputTokens": 7914, "cacheRead": 49479, "cacheWrite": 12729, "assertions": "12/12", "filesOnDisk": false, "note": "extracted from denial payload", "quality": 8.5 },
+    "c2": { "turns": 4, "cost": 0.081963, "outputTokens": 2522, "cacheRead": 62543, "cacheWrite": 6632, "assertions": "6/6", "filesOnDisk": false, "note": "extracted from denial payload; test 5 uses real spin-wait", "quality": 8 },
+    "c3": { "turns": 3, "cost": 0.114534, "outputTokens": 4617, "cacheRead": 46992, "cacheWrite": 8174, "assertions": "6/6", "filesOnDisk": false, "note": "extracted from denial payload", "quality": 8 }
+  },
+  "agent-flow": {
+    "s1": { "turns": 4, "cost": 0.040907, "inputTokens": 6, "outputTokens": 900, "cacheRead": 2218, "cacheWrite": 7126, "cacheHitRate": "100%", "filesOnDisk": true, "quality": 9 },
+    "s2": { "turns": 4, "cost": 0.045040, "inputTokens": 6, "outputTokens": 1952, "cacheRead": 7520, "cacheWrite": 3596, "cacheHitRate": "100%", "filesOnDisk": true, "quality": 9 },
+    "s3": { "turns": 2, "cost": 0.036556, "inputTokens": 4, "outputTokens": 1667, "cacheRead": 2226, "cacheWrite": 2899, "cacheHitRate": "0%", "filesOnDisk": true, "quality": 9 },
+    "c1": { "turns": 14, "cost": 0.214319, "inputTokens": 16, "outputTokens": 8076, "cacheRead": 100200, "cacheWrite": 16819, "cacheHitRate": "100%", "assertions": "51/51", "compilesClean": true, "testsPassed": true, "filesOnDisk": true, "quality": 9.5 },
+    "c2": { "turns": 12, "cost": 0.204681, "inputTokens": 3858, "outputTokens": 7532, "cacheRead": 68737, "cacheWrite": 15868, "cacheHitRate": "100%", "assertions": "14/14", "compilesClean": true, "testsPassed": true, "filesOnDisk": true, "quality": 9.5 },
+    "c3": { "turns": 14, "cost": 0.250436, "inputTokens": 15, "outputTokens": 10269, "cacheRead": 95763, "cacheWrite": 18034, "cacheHitRate": "100%", "assertions": "27/27", "compilesClean": true, "testsPassed": true, "filesOnDisk": true, "quality": 9.5 }
+  },
+  "agent-forge": {
+    "prompt": "agent-flow-exact",
+    "note": "Uses identical identity + guidelines as agent-flow. S1/S2/C2/C3 pending re-run with current prompt.",
+    "s1": null,
+    "s2": null,
+    "s3": { "turns": 3, "cost": 0.054700, "inputTokens": 5522, "outputTokens": 1721, "cacheRead": 0, "cacheWrite": 3284, "assertions": "4/4", "filesOnDisk": true, "quality": 8.5, "note": "cold run — no prior cache" },
+    "c1": { "turns": 6, "cost": 0.245800, "inputTokens": 18595, "outputTokens": 8282, "cacheRead": 11596, "cacheWrite": 16622, "assertions": "38/38", "compilesClean": true, "testsPassed": true, "filesOnDisk": true, "quality": 9.5, "note": "cold run — no prior cache" },
+    "c2": null,
+    "c3": null
+  },
+  "agent-forge-history": {
+    "note": "Earlier prompt iterations run on 2026-04-27 for comparison.",
+    "v1-original-prompt": {
+      "s1": { "turns": 4, "cost": 0.025600, "inputTokens": 973, "outputTokens": 643, "cacheRead": 7730, "cacheWrite": 2869, "assertions": "7/7", "filesOnDisk": true, "quality": 9 },
+      "c3": { "turns": 12, "cost": 0.140000, "inputTokens": 13483, "outputTokens": 3951, "cacheRead": 53408, "cacheWrite": 6459, "assertions": "9/9", "compilesClean": true, "testsPassed": true, "filesOnDisk": true, "quality": 8.5, "note": "missing snapshot guard, removeAllListeners, void events" }
+    },
+    "v2-rewritten-guidelines": {
+      "s2": { "turns": 4, "cost": 0.088400, "inputTokens": 6571, "outputTokens": 3442, "cacheRead": 8283, "cacheWrite": 3884, "assertions": "10/10", "filesOnDisk": true, "quality": 9.5, "note": "over-thorough for simple task" },
+      "c3": { "turns": 9, "cost": 0.174800, "inputTokens": 14046, "outputTokens": 6009, "cacheRead": 39159, "cacheWrite": 8199, "assertions": "9/9+4bonus", "compilesClean": true, "testsPassed": true, "filesOnDisk": true, "quality": 9.5 }
+    },
+    "v3-claude-code-plus-explicit-guidelines": {
+      "s3": { "turns": 7, "cost": 0.260300, "inputTokens": 20333, "outputTokens": 9702, "cacheRead": 27457, "cacheWrite": 12134, "assertions": "20/20", "filesOnDisk": true, "quality": 9.5, "note": "7x cost overrun vs agent-flow — completeness guidelines over-triggered" },
+      "c1": { "turns": 4, "cost": 0.145500, "inputTokens": 11405, "outputTokens": 5924, "cacheRead": 8244, "cacheWrite": 5331, "assertions": "12/12", "compilesClean": true, "testsPassed": true, "filesOnDisk": true, "quality": 9 }
+    }
+  }
+}

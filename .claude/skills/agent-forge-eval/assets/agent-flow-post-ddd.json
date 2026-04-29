@@ -1,0 +1,141 @@
+{
+  "label": "agent-flow after DDD refactor — clean run (no memory pollution)",
+  "capturedAt": "2026-04-26",
+  "source": "automated — agent-flow -p --debug, memory cleared before run (rm -rf /tmp/.agent-flow/)",
+  "model": "claude-sonnet-4-6",
+  "tool": "agent-flow",
+  "notes": "Clean eval run post-DDD refactor. Memory cleared before all tasks. Simple tasks now take 4 turns each (agent writes files + tests even for simple prompts — behavioral change vs pre-DDD). Complex tasks produce larger, more thorough implementations. All tests auto-run and verified.",
+
+  "dddChanges": [
+    "packages/agent/src/context-manager.ts → packages/agent/src/context/ (6 domain modules)",
+    "packages/flow/src/adapters/ layer added (corrections, render, repo-map, worktree, llm-compaction)",
+    "packages/session/src/ expanded (log.ts, memory.ts, resume.ts)"
+  ],
+
+  "simpleTasks": {
+    "total": {
+      "cost": 0.163,
+      "tasks": 3,
+      "avgTurns": 4,
+      "note": "4 turns each vs 1 pre-DDD — agent now writes files + tests for all prompts"
+    },
+    "S1_palindrome": {
+      "turns": 4,
+      "cost": 0.0414,
+      "inputTokens": 6,
+      "outputTokens": 1024,
+      "cacheRead": 4218,
+      "cacheWrite": 6602,
+      "cacheHitRate": 100.0
+    },
+    "S2_queue": {
+      "turns": 4,
+      "cost": 0.0488,
+      "inputTokens": 6,
+      "outputTokens": 1440,
+      "cacheRead": 4717,
+      "cacheWrite": 6876,
+      "cacheHitRate": 100.0
+    },
+    "S3_debounce": {
+      "turns": 4,
+      "cost": 0.0729,
+      "inputTokens": 6,
+      "outputTokens": 2709,
+      "cacheRead": 6038,
+      "cacheWrite": 8119,
+      "cacheHitRate": 100.0
+    }
+  },
+
+  "complexTasks": {
+    "total": {
+      "cost": 0.7934,
+      "tasks": 3,
+      "avgTurns": 6.0
+    },
+    "C1_lruCache": {
+      "turns": 6,
+      "cost": 0.4330,
+      "inputTokens": 8,
+      "outputTokens": 19644,
+      "cacheRead": 68837,
+      "cacheWrite": 31379,
+      "cacheHitRate": 100.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": true,
+      "testCount": 14,
+      "testPassCount": 14,
+      "qualityScore": 9.9,
+      "qualityNotes": "383 lines. LRUCache<K,V> with sentinel-node DLL. has() (non-promoting peek), peek(), toArray() (MRU-first). Full JSDoc. 14 tests: constructor validation, get/put, eviction order, key promotion, clear, has(), peek(), toArray(), capacity=1 edge case, generics, sequential evictions.",
+      "dataSource": "automated"
+    },
+    "C2_rateLimiter": {
+      "turns": 5,
+      "cost": 0.2579,
+      "inputTokens": 7,
+      "outputTokens": 12007,
+      "cacheRead": 37183,
+      "cacheWrite": 17768,
+      "cacheHitRate": 100.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": true,
+      "testCount": 5,
+      "testPassCount": 5,
+      "qualityScore": 9.3,
+      "qualityNotes": "233 lines. Correct lazy-refill token bucket (no background timer). RangeError validation with exact substrings. 5 tests: starts full, consume deducts, returns false when empty, reset refills, constructor/consume validation. No injectable clock (weaker testability vs post-DDD baseline).",
+      "dataSource": "automated"
+    },
+    "C3_eventEmitter": {
+      "turns": 7,
+      "cost": 0.1025,
+      "inputTokens": 9,
+      "outputTokens": 2141,
+      "cacheRead": 58988,
+      "cacheWrite": 14045,
+      "cacheHitRate": 100.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": true,
+      "testCount": 14,
+      "testPassCount": 14,
+      "qualityScore": 9.8,
+      "qualityNotes": "244 lines. Conditional rest-tuple for void events (emit('ping') compiles without data). Set semantics dedup listeners. Snapshot-before-iterate prevents mutation bugs. listenerCount(), removeAllListeners(event?), fluent chaining. 14 tests in 5 groups.",
+      "dataSource": "automated"
+    }
+  },
+
+  "overallQuality": {
+    "score": 9.67,
+    "basis": "All 6 tasks: compile verified + tests auto-run and passed",
+    "strengths": [
+      "All tests auto-run and verified during task",
+      "LRU has(), peek(), toArray() — API beyond spec",
+      "Debounce .cancel(), .flush(), leading-edge — well beyond spec",
+      "EventEmitter void events via conditional rest-tuple",
+      "383-line LRU with 14 tests is notably thorough"
+    ],
+    "weaknesses": [
+      "Simple tasks now 4 turns each (was 1) — unnecessary overhead for inline prompts",
+      "Rate limiter has no injectable clock (harder to test time-based behaviour)",
+      "C1 cost $0.433 is 4.6x pre-DDD for same task"
+    ]
+  },
+
+  "vsPreDDD": {
+    "simpleCostDelta": "+109%",
+    "complexCostDelta": "+175%",
+    "qualityDelta": "+0.17",
+    "avgTurnsDelta": {
+      "simple": "+3 turns each",
+      "complex": "-1.7 turns avg"
+    },
+    "costPerQualityPoint": {
+      "preDDD": 0.030,
+      "postDDD": 0.082
+    },
+    "verdict": "Post-DDD produces more thorough code with all tests auto-verified, but at 2.7x worse cost-per-quality-point. Simple task regression (4 turns vs 1) is the most actionable fix."
+  }
+}

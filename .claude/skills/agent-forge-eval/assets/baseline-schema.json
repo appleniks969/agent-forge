@@ -1,0 +1,109 @@
+{
+  "label": "agent-forge after <change> — <short notes>",
+  "capturedAt": "YYYY-MM-DD",
+  "source": "automated — agent-forge -p --debug, memory cleared before run (rm -rf /tmp/.agent-forge/)",
+  "model": "claude-sonnet-4-6",
+  "tool": "agent-forge",
+  "notes": "Optional free-text context about this run.",
+
+  "simpleTasks": {
+    "total": {
+      "cost": 0.0,
+      "tasks": 3,
+      "avgTurns": 0
+    },
+    "S1_palindrome": {
+      "turns": 0,
+      "cost": 0.0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cacheHitRate": 0.0
+    },
+    "S2_queue": {
+      "turns": 0,
+      "cost": 0.0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cacheHitRate": 0.0
+    },
+    "S3_debounce": {
+      "turns": 0,
+      "cost": 0.0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cacheHitRate": 0.0
+    }
+  },
+
+  "complexTasks": {
+    "total": {
+      "cost": 0.0,
+      "tasks": 3,
+      "avgTurns": 0
+    },
+    "C1_lruCache": {
+      "turns": 0,
+      "cost": 0.0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cacheHitRate": 0.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": true,
+      "testCount": 0,
+      "testPassCount": 0,
+      "qualityScore": 0.0,
+      "qualityNotes": "",
+      "dataSource": "automated"
+    },
+    "C2_rateLimiter": {
+      "turns": 0,
+      "cost": 0.0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cacheHitRate": 0.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": true,
+      "testCount": 0,
+      "testPassCount": 0,
+      "qualityScore": 0.0,
+      "qualityNotes": "",
+      "dataSource": "automated"
+    },
+    "C3_eventEmitter": {
+      "turns": 0,
+      "cost": 0.0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cacheHitRate": 0.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testsAutoRun": true,
+      "testCount": 0,
+      "testPassCount": 0,
+      "qualityScore": 0.0,
+      "qualityNotes": "",
+      "dataSource": "automated"
+    }
+  },
+
+  "overallQuality": {
+    "score": 0.0,
+    "basis": "All 6 tasks: compile verified + tests auto-run and passed",
+    "strengths": [],
+    "weaknesses": []
+  }
+}
