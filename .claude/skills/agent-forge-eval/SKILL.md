@@ -7,13 +7,13 @@ description: >
   against another CLI (e.g. claude CLI). Produces per-task metrics (turns, cost,
   tokens, cache hit rate, compile/test pass) and a markdown comparison table.
 compatibility: >
-  Requires agent-forge (agent-forge -p --debug) and optionally claude CLI.
+  Requires agent-forge (agent-forge --prompt --verbose) and optionally claude CLI.
   Also requires tsc (TypeScript compiler) and npx ts-node for quality checks on
   complex tasks. Run from any empty directory — the skill creates all files.
 license: MIT
 metadata:
   author: agent-forge
-  version: "1.0"
+  version: "1.1"
   baseline-date: "2026-04-26"
   model: claude-sonnet-4-6
 allowed-tools: Bash Read Write
@@ -31,12 +31,25 @@ See [task definitions](references/tasks.md) and [known baselines](references/bas
 
 ## Before you start
 
-Clear all accumulated agent-forge memory to prevent contamination, then create
-fresh isolated directories for each task:
+**Isolation matters.** Some agent CLIs (notably `agent-flow`) explore parent
+directories at start-up; if two tools run under a shared grandparent dir,
+each can `ls ..` and pull the other's in-flight files into context. We have
+seen this contaminate a comparison run, with one tool effectively
+code-reviewing the other's output.
+
+Rules:
+1. **Disjoint parent dirs per tool** — never `/tmp/eval/{af,cc}/...`; use
+   separate top-level parents instead.
+2. **Sequential execution** — never run two tools on the same task in
+   parallel.
+3. **Memory cleared between runs** — `/tmp/.agent-forge/` and any tool-specific
+   memory locations.
 
 ```bash
-rm -rf /tmp/.agent-forge/
-rm -rf /tmp/eval && mkdir -p /tmp/eval/af/{s1,s2,s3,c1,c2,c3} /tmp/eval/cc/{s1,s2,s3,c1,c2,c3}
+rm -rf /tmp/.agent-forge/ /tmp/.agent-flow/ ~/.agent-flow/cache 2>/dev/null
+rm -rf /tmp/agent-forge-eval /tmp/claude-cli-eval
+mkdir -p /tmp/agent-forge-eval/{s1,s2,s3,c1,c2,c3}
+mkdir -p /tmp/claude-cli-eval/{s1,s2,s3,c1,c2,c3}
 ```
 
 ---
@@ -46,13 +59,17 @@ rm -rf /tmp/eval && mkdir -p /tmp/eval/af/{s1,s2,s3,c1,c2,c3} /tmp/eval/cc/{s1,s
 ### agent-forge (per task)
 
 ```bash
-cd /tmp/eval/af/<task> && agent-forge -p --debug "<prompt>" 2>&1 | tee out.txt
+cd /tmp/agent-forge-eval/<task> && agent-forge --prompt "<prompt>" --verbose 2>&1 | tee out.txt
 ```
+
+> The current CLI uses `--prompt` (not `-p`) and `--verbose` (there is no
+> `--debug` flag — `--debug-stream` exists but only emits raw provider
+> events to stderr and is not needed for baseline capture).
 
 ### claude CLI (per task, for comparison)
 
 ```bash
-cd /tmp/eval/cc/<task> && claude -p "<prompt>" --output-format json 2>&1 | tee out.txt
+cd /tmp/claude-cli-eval/<task> && claude -p "<prompt>" --output-format json 2>&1 | tee out.txt
 ```
 
 > **Note:** `claude -p --debug "<prompt>"` is wrong — `--debug` optionally
@@ -69,17 +86,28 @@ Copy prompts from [references/tasks.md](references/tasks.md).
 
 ## Capturing metrics
 
-### From agent-forge `--debug` output (`out.txt`)
+### From agent-forge `--verbose` output (`out.txt`)
+
+The current renderer prints **one footer line per session** in the format:
+
+```
+[N turn(s)  ·  Xin / Yout  ·  $0.XXXX  ·  ↓Z read  ↑W write  ·  ctx: K%]
+```
 
 | Metric | How to extract |
 |---|---|
-| `turns` | count of `API REQUEST` blocks |
-| `cost` | sum of all `Cost: $X` lines |
-| `inputTokens` | sum of all `Input: X tokens` lines (uncached) |
-| `outputTokens` | sum of all `Output: X tokens` lines |
-| `cacheRead` | sum of all `Cache Read: X tokens` lines |
-| `cacheWrite` | sum of all `Cache Write: X tokens` lines |
-| `cacheHitRate` | last turn's `Cache hit rate: X%` |
+| `turns` | parse `N` from `[N turn(s)` |
+| `cost` | parse the `$X.XXXX` token (after the green ANSI prefix) |
+| `inputTokens` | parse `X` from `Xin / Yout` |
+| `outputTokens` | parse `Y` from `Xin / Yout` |
+| `cacheRead` | parse `Z` from `↓Z read` |
+| `cacheWrite` | parse `W` from `↑W write` |
+| `cacheHitRate` | not exposed; compute as `cacheRead / (cacheRead + inputTokens) * 100` if needed |
+
+> **Per-turn metrics are no longer printed** by `--verbose`. The earlier
+> `API REQUEST (turn N)` blocks belong to a previous CLI version. If you
+> need raw per-turn data, run with `--debug-stream` (writes stream events
+> to stderr), but baseline capture only requires the session footer.
 
 ### From claude CLI JSON output (`out.txt`, `--output-format json`)
 
@@ -131,7 +159,7 @@ Structure (mirror [assets/baseline-schema.json](assets/baseline-schema.json)):
 {
   "label": "agent-forge after <change> — <notes>",
   "capturedAt": "YYYY-MM-DD",
-  "source": "automated — agent-forge -p --debug, memory cleared before run",
+  "source": "automated — agent-forge --prompt --verbose, memory cleared and isolated parent dirs per tool",
   "model": "claude-sonnet-4-6",
   "tool": "agent-forge",
   "simpleTasks": {
