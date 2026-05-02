@@ -36,11 +36,12 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.styles import Style as PtkStyle
 
 from .context import ContextWindow
-from .loop import AgentResult, DoneAgentEvent, agent_loop, make_config
+from .loop import AgentResult, make_config
 from .messages import UserMessage
 from .models import DEFAULT_MODEL, MODELS, Model
 from .prompts import build_system_prompt
 from .renderer import dim, bold, green, red, yellow, render_event, print_footer
+from .runner import drive
 from .session import (
     append_message, append_metadata, latest_session_id,
     new_id, resume_session, update_memory,
@@ -232,10 +233,10 @@ async def run_chat(cfg: ChatConfig) -> None:
         result: AgentResult | None = None
 
         try:
-            async for event in agent_loop(loop_cfg, initial_msgs):
-                if isinstance(event, DoneAgentEvent):
-                    result = event.result
-                render_event(event, cfg.verbose)
+            result = await drive(
+                loop_cfg, initial_msgs,
+                on_event=lambda ev: render_event(ev, cfg.verbose),
+            )
         except KeyboardInterrupt:
             print(f"\n{yellow('Interrupted')}")
             abort.set()
@@ -301,12 +302,10 @@ async def _run_single_prompt(cfg: ChatConfig, prompt: str) -> None:
         max_tokens=cfg.model.max_tokens,
     )
     user_msg = UserMessage(content=prompt)
-    result: AgentResult | None = None
-
-    async for event in agent_loop(loop_cfg, [user_msg]):
-        if isinstance(event, DoneAgentEvent):
-            result = event.result
-        render_event(event, cfg.verbose)
+    result = await drive(
+        loop_cfg, [user_msg],
+        on_event=lambda ev: render_event(ev, cfg.verbose),
+    )
     if result:
         ctx_pct = (result.usage.input + result.usage.cache_read) / cfg.model.context_window * 100
         print_footer(cfg.model.id, result.usage.cost, result.usage, result.turns, ctx_pct)

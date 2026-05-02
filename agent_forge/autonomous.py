@@ -27,13 +27,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .loop import (
-    AgentResult, DoneAgentEvent, HookDecision, NoopHooks,
-    agent_loop, make_config,
+    AgentResult, HookDecision, NoopHooks, make_config,
 )
 from .messages import ToolCallContent, ToolResult, UserMessage, ZERO_USAGE
 from .models import DEFAULT_MODEL, Model
 from .prompts import build_autonomous_prompt
 from .renderer import render_event
+from .runner import drive
 from .tools import default_registry
 
 logger = logging.getLogger(__name__)
@@ -262,13 +262,10 @@ class AutonomousFlow:
         user_msg = UserMessage(
             content=f"Analyse this task and write a precise implementation plan:\n\n{self._cfg.task}"
         )
-        result: AgentResult | None = None
-        async for event in agent_loop(loop_cfg, [user_msg]):
-            if isinstance(event, DoneAgentEvent):
-                result = event.result
-            if self._cfg.verbose:
-                render_event(event, verbose=True)
-
+        on_event = (
+            (lambda ev: render_event(ev, verbose=True)) if self._cfg.verbose else None
+        )
+        result = await drive(loop_cfg, [user_msg], on_event=on_event)
         return result.text if result else ""
 
 
@@ -303,15 +300,10 @@ class AutonomousFlow:
             if plan else self._cfg.task
         )
         user_msg = UserMessage(content=task_content)
-        initial_msgs = [user_msg]
-
-        result: AgentResult | None = None
-
-        async for event in agent_loop(loop_cfg, initial_msgs):
-            if isinstance(event, DoneAgentEvent):
-                result = event.result
-            render_event(event, verbose=self._cfg.verbose)
-        return result
+        return await drive(
+            loop_cfg, [user_msg],
+            on_event=lambda ev: render_event(ev, verbose=self._cfg.verbose),
+        )
 
     # ── Verify — agent (Fix 5) ────────────────────────────────────────────────
 
@@ -341,12 +333,10 @@ class AutonomousFlow:
         user_msg = UserMessage(
             content=f"Verify the implementation of:\n{self._cfg.task}\n\nRun tests and confirm correctness."
         )
-        result: AgentResult | None = None
-        async for event in agent_loop(loop_cfg, [user_msg]):
-            if isinstance(event, DoneAgentEvent):
-                result = event.result
-            if self._cfg.verbose:
-                render_event(event, verbose=True)
+        on_event = (
+            (lambda ev: render_event(ev, verbose=True)) if self._cfg.verbose else None
+        )
+        result = await drive(loop_cfg, [user_msg], on_event=on_event)
 
         if result is None:
             return False, "Verification agent produced no result"

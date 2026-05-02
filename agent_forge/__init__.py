@@ -39,6 +39,7 @@ from .loop import (
     DoneAgentEvent, TurnStartEvent, TextDeltaAgentEvent, ToolResultAgentEvent,
     Hooks, NoopHooks, HookDecision,
 )
+from .runner import drive
 from .chat import ChatConfig, run_chat
 from .autonomous import (
     AutonomousConfig, AutonomousFlow, BashGuardHook, FlowResult, run_autonomous,
@@ -60,6 +61,7 @@ __all__ = [
     "AgentConfig", "AgentResult", "AgentEvent", "agent_loop", "make_config",
     "DoneAgentEvent", "TurnStartEvent", "TextDeltaAgentEvent", "ToolResultAgentEvent",
     "Hooks", "NoopHooks", "HookDecision",
+    "drive",
     "ChatConfig", "run_chat",
     "AutonomousConfig", "AutonomousFlow", "BashGuardHook", "FlowResult", "run_autonomous",
 ]
