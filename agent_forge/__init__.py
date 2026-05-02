@@ -7,9 +7,10 @@ from .provider import (
 )
 from .tools import Tool, ToolRegistry, default_registry
 from .context import (
-    ContextWindow, ContextBudget, PressureTier, SectionName, SystemPrompt,
+    ContextWindow, ContextBudget, PressureTier,
     assess_pressure, ABSOLUTE_P4, ABSOLUTE_P3, ABSOLUTE_AGG,
 )
+from .system_prompt import SectionName, SystemPrompt
 from .session import (
     append_message, append_metadata, load_memory, load_memory_deduped,
     new_id, resume_session, update_memory,

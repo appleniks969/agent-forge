@@ -17,8 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .context import ContextWindow, SectionName, SystemPrompt
 from .session import load_memory_deduped
+from .system_prompt import SectionName, SystemPrompt
 
 # Shared by both chat and autonomous prompts (group-0 cache — no volatile content).
 _TOOLS_SECTION = (

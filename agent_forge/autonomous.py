@@ -25,11 +25,11 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .context import ContextWindow, SectionName, SystemPrompt
 from .loop import AgentResult, DoneAgentEvent, agent_loop, make_config
 from .prompts import _TOOLS_SECTION, _build_tools_section, _discover_skills
 from .provider import DEFAULT_MODEL, Model, UserMessage, ZERO_USAGE
 from .renderer import render_event
+from .system_prompt import SectionName, SystemPrompt
 from .tools import default_registry
 
 logger = logging.getLogger(__name__)
