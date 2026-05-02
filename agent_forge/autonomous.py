@@ -32,9 +32,8 @@ from .loop import (
 )
 from .messages import ToolCallContent, ToolResult, UserMessage, ZERO_USAGE
 from .models import DEFAULT_MODEL, Model
-from .prompts import _TOOLS_SECTION, _build_tools_section, _discover_skills
+from .prompts import build_autonomous_prompt
 from .renderer import render_event
-from .system_prompt import SectionName, SystemPrompt
 from .tools import default_registry
 
 logger = logging.getLogger(__name__)
@@ -242,25 +241,12 @@ class AutonomousFlow:
         assert self._worktree_path is not None
         tool_registry = default_registry()
 
-        sp = SystemPrompt()
-        sp.register(SectionName.IDENTITY, lambda: (
-            "You are agent-forge in planning mode inside an isolated git worktree.\n"
-            "Your ONLY job right now is to analyse the codebase and produce a precise implementation plan.\n"
-            "DO NOT create, edit, or delete any files. Use Read, Grep, and Find to inspect the codebase."
-        ))
-        sp.register(SectionName.TOOLS, lambda: _build_tools_section(tool_registry))
-        sp.register(SectionName.GUIDELINES, lambda: (
-            "Output a numbered list of concrete steps. Each step must name the exact file, function, "
-            "and change needed so that an engineer could execute it without ambiguity.\n"
-            "End your response with the single line: PLAN COMPLETE"
-        ))
-        _skills = _discover_skills(self._cfg.repo_path)
-        sp.register(SectionName.SKILLS, lambda: _skills)
-        sp.register(SectionName.ENVIRONMENT, lambda: (
-            f"Working directory: {self._worktree_path}\n"
-            f"Branch: {self._branch}\n"
-            f"Date: {__import__('datetime').date.today()}"
-        ))
+        sp = build_autonomous_prompt(
+            "plan",
+            cwd=self._worktree_path, tool_registry=tool_registry,
+            branch=self._branch, worktree_path=self._worktree_path,
+            skills_cwd=self._cfg.repo_path,
+        )
 
         loop_cfg = make_config(
             model=self._cfg.model,
@@ -292,40 +278,12 @@ class AutonomousFlow:
         assert self._worktree_path is not None
         tool_registry = default_registry()
 
-        sp = SystemPrompt()
-        sp.register(SectionName.IDENTITY, lambda: (
-            "You are agent-forge running in autonomous mode inside an isolated git worktree.\n"
-            "Your job is to complete the assigned task fully and correctly, then stop.\n"
-            "There is no human in the loop between turns. Do not ask for confirmation.\n"
-            "Do not commit, push, or open a pull request — the delivery system handles that after you finish."
-        ))
-        sp.register(SectionName.TOOLS, lambda: _build_tools_section(tool_registry))
-        sp.register(SectionName.GUIDELINES, lambda: (
-            "Guidelines:\n"
-            "- Read a file before editing it. Use Edit (not Write) for existing files.\n"
-            "- After making changes, run the available tests (pytest, npm test, cargo test, go test, etc.)"
-            " and fix every failure before considering the task complete. If no tests exist, exercise the"
-            " changed code path with a small script you delete afterwards.\n"
-            "- Use the minimum number of tool calls. Use Grep and Find before Bash for search.\n"
-            "- Use assert statements (not print) in any test or example you write.\n"
-            "- Never add TODO comments, placeholder values, or stub implementations."
-            " The task is to finish the work, not mark where it would go.\n"
-            "- All tool paths are relative to the working directory.\n"
-            "- When a tool returns is_error=true, diagnose before retrying. When output is truncated,"
-            " refine the call with offset / limit / glob — do not re-run the same call.\n"
-            "- If you hit an unrecoverable blocker (missing dependency, ambiguous spec, contradiction with"
-            " existing code), describe the blocker clearly and stop. Do not invent a workaround.\n"
-            "- End your final reply with a single section titled \"Changes made:\" listing every file you"
-            " modified and a one-line reason for each. This becomes the PR/commit body."
-        ))
-        _skills = _discover_skills(self._cfg.repo_path)
-        sp.register(SectionName.SKILLS, lambda: _skills)
-        sp.register(SectionName.ENVIRONMENT, lambda: (
-            f"Working directory: {self._worktree_path}\n"
-            f"Branch: {self._branch}\n"
-            f"Date: {__import__('datetime').date.today()}\n"
-            "All file paths are relative to the working directory."
-        ))
+        sp = build_autonomous_prompt(
+            "execute",
+            cwd=self._worktree_path, tool_registry=tool_registry,
+            branch=self._branch, worktree_path=self._worktree_path,
+            skills_cwd=self._cfg.repo_path,
+        )
 
         loop_cfg = make_config(
             model=self._cfg.model,
@@ -362,28 +320,12 @@ class AutonomousFlow:
         assert self._worktree_path is not None
         tool_registry = default_registry()
 
-        sp = SystemPrompt()
-        sp.register(SectionName.IDENTITY, lambda: (
-            "You are agent-forge in verification mode inside an isolated git worktree.\n"
-            "Your job is to verify the implementation by running every available test and "
-            "confirming the result matches the task requirements."
-        ))
-        sp.register(SectionName.TOOLS, lambda: _build_tools_section(tool_registry))
-        sp.register(SectionName.GUIDELINES, lambda: (
-            "1. Discover and run all test suites (pytest, npm test, cargo test, go test, etc.).\n"
-            "2. If any tests fail, fix them before finishing.\n"
-            "3. Confirm the implementation satisfies the original task requirements.\n"
-            "4. End your final message with EXACTLY one of:\n"
-            "     VERIFICATION PASSED\n"
-            "     VERIFICATION FAILED: <one-line reason>"
-        ))
-        _skills = _discover_skills(self._cfg.repo_path)
-        sp.register(SectionName.SKILLS, lambda: _skills)
-        sp.register(SectionName.ENVIRONMENT, lambda: (
-            f"Working directory: {self._worktree_path}\n"
-            f"Branch: {self._branch}\n"
-            f"Date: {__import__('datetime').date.today()}"
-        ))
+        sp = build_autonomous_prompt(
+            "verify",
+            cwd=self._worktree_path, tool_registry=tool_registry,
+            branch=self._branch, worktree_path=self._worktree_path,
+            skills_cwd=self._cfg.repo_path,
+        )
 
         loop_cfg = make_config(
             model=self._cfg.model,
