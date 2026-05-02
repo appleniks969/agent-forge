@@ -298,8 +298,12 @@ class LLMProvider(Protocol):
     ) -> AsyncIterator[StreamEvent]: ...
 
 # ── Anthropic adapter ─────────────────────────────────────────────────────────
+#
+# Retry policy lives in loop.py (_stream_one_turn) — single owner for retries
+# means total-attempt count is honest and jitter / backoff is uniform.
+# This adapter classifies errors and surfaces them as StreamErrorEvent; the loop
+# decides whether to retry based on .retryable.
 
-_MAX_RETRIES = 3
 _RETRY_CODES = {429, 500, 502, 503, 529}
 
 
@@ -418,30 +422,23 @@ class AnthropicProvider:
         if isinstance(thinking_param, dict) and thinking_param.get("type") == "enabled":
             effective_max = min(effective_max + thinking_param.get("budget_tokens", 0), model.max_tokens)
 
-        for attempt in range(_MAX_RETRIES):
-            try:
-                async for ev in _do_stream(
-                    client, model, system_blocks, api_msgs, api_tools,
-                    effective_max, thinking_param, betas, signal,
-                ):
-                    yield ev
-                return
-            except _anthropic.RateLimitError as exc:
-                retry_after = float(getattr(exc.response, "headers", {}).get("retry-after", 5))
-                if attempt < _MAX_RETRIES - 1:
-                    await asyncio.sleep(retry_after)
-                    continue
-                yield StreamErrorEvent(error=str(exc), retryable=True)
-                return
-            except _anthropic.APIStatusError as exc:
-                if exc.status_code in _RETRY_CODES and attempt < _MAX_RETRIES - 1:
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-                yield StreamErrorEvent(error=str(exc), retryable=exc.status_code in _RETRY_CODES)
-                return
-            except Exception as exc:
-                yield StreamErrorEvent(error=str(exc), retryable=False)
-                return
+        # No retry loop here — retries are owned by loop._stream_one_turn().
+        # Classify errors and surface them; the loop decides if/when to retry.
+        try:
+            async for ev in _do_stream(
+                client, model, system_blocks, api_msgs, api_tools,
+                effective_max, thinking_param, betas, signal,
+            ):
+                yield ev
+        except _anthropic.RateLimitError as exc:
+            yield StreamErrorEvent(error=str(exc), retryable=True)
+        except _anthropic.APIStatusError as exc:
+            yield StreamErrorEvent(
+                error=str(exc),
+                retryable=exc.status_code in _RETRY_CODES,
+            )
+        except Exception as exc:
+            yield StreamErrorEvent(error=str(exc), retryable=False)
 
 
 def _system_already_injected(api_msgs: list[dict], real_system: str) -> bool:
