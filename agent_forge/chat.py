@@ -54,7 +54,7 @@ class ChatConfig:
     model: Model = DEFAULT_MODEL
     cwd: str = "."
     thinking: str = "medium"
-    max_turns: int = 50
+    max_turns: int = 100  # Fix 4: raised from 50 to match coding-agent-flow
     verbose: bool = False
     continue_session: bool = False
     resume_id: str | None = None

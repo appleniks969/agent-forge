@@ -204,25 +204,68 @@ class WriteTool:
         except Exception as exc:
             return ToolResult(content=str(exc), is_error=True)
 
-# ── EditTool ──────────────────────────────────────────────────────────────────
+# ── EditTool helpers (Fix 2: fuzzy matching) ────────────────────────────────
+
+def _fuzzy_find(text: str, old: str) -> "tuple[str, str] | None":
+    """
+    Try progressively looser matches for old_string.
+    Returns (matched_old, matched_text) where matched_old is guaranteed to be
+    present in matched_text, or None if no fuzzy match found.
+
+    Strategies (in order):
+      1. CRLF -> LF normalisation (Windows line endings in file or old_string)
+      2. Strip trailing whitespace per line (most common editor divergence)
+    """
+    # 1. CRLF -> LF
+    old_lf  = old.replace("\r\n", "\n")
+    text_lf = text.replace("\r\n", "\n")
+    if old_lf in text_lf:
+        return old_lf, text_lf
+    # 2. Strip trailing whitespace per line
+    def _rstrip_lines(s: str) -> str:
+        return "\n".join(line.rstrip() for line in s.splitlines())
+    old_rs  = _rstrip_lines(old_lf)
+    text_rs = _rstrip_lines(text_lf)
+    if old_rs and old_rs in text_rs:
+        return old_rs, text_rs
+    return None
+
+
+# ── EditTool (Fix 1: multi-edit batching, Fix 2: fuzzy matching) ──────────────
 
 class EditTool:
     name = "Edit"
     description = (
-        "Make a targeted edit to an existing file by replacing exact text. "
-        "old_string must match exactly (including whitespace). "
+        "Make one or more targeted edits to an existing file. "
+        "Supply EITHER a single old_string/new_string pair OR an edits array for "
+        "multiple replacements in one atomic call. "
+        "Each old_string is matched against the original file content (not the running result). "
         "Read the file first to get the exact text. "
-        "Use replace_all=true to replace every occurrence."
+        "Use replace_all=true to replace every occurrence of a given old_string. "
+        "Fuzzy matching handles trailing-whitespace and CRLF differences automatically."
     )
     parameters = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "File path (relative to cwd)"},
-            "old_string": {"type": "string", "description": "Exact text to replace"},
-            "new_string": {"type": "string", "description": "Replacement text"},
-            "replace_all": {"type": "boolean", "description": "Replace all occurrences", "default": False},
+            "old_string": {"type": "string", "description": "Exact text to replace (single-edit mode)"},
+            "new_string": {"type": "string", "description": "Replacement text (single-edit mode)"},
+            "replace_all": {"type": "boolean", "description": "Replace all occurrences (single-edit mode)", "default": False},
+            "edits": {
+                "type": "array",
+                "description": "Batch of edits applied atomically (multi-edit mode). Each old_string matched against original file.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old_string": {"type": "string", "description": "Exact text to replace"},
+                        "new_string": {"type": "string", "description": "Replacement text"},
+                        "replace_all": {"type": "boolean", "default": False},
+                    },
+                    "required": ["old_string", "new_string"],
+                },
+            },
         },
-        "required": ["path", "old_string", "new_string"],
+        "required": ["path"],
     }
 
     def definition(self) -> ToolDefinition:
@@ -230,36 +273,75 @@ class EditTool:
 
     async def execute(self, args: dict, *, cwd: str, signal: asyncio.Event | None = None) -> ToolResult:
         path = args.get("path", "")
-        old = args.get("old_string", "")
-        new = args.get("new_string", "")
-        replace_all = bool(args.get("replace_all", False))
         if not path:
             return ToolResult(content="Error: no path provided", is_error=True)
-        if not old:
-            return ToolResult(content="Error: old_string must not be empty", is_error=True)
+
+        # Fix 1: normalise to a list of (old, new, replace_all) triples
+        edits_raw = args.get("edits")
+        if edits_raw:
+            edits: list[tuple[str, str, bool]] = [
+                (e["old_string"], e["new_string"], bool(e.get("replace_all", False)))
+                for e in edits_raw
+            ]
+        elif args.get("old_string") is not None:
+            edits = [(args["old_string"], args.get("new_string", ""), bool(args.get("replace_all", False)))]
+        else:
+            return ToolResult(content="Error: provide old_string or edits array", is_error=True)
+
         try:
             resolved = _sandbox(path, cwd)
             with open(resolved, encoding="utf-8") as f:
                 original = f.read()
-            if old not in original:
-                count = original.count(old)
-                return ToolResult(content=f"old_string not found in {path} (found {count} matches)", is_error=True)
-            count = original.count(old)
-            if count > 1 and not replace_all:
-                return ToolResult(
-                    content=f"old_string appears {count} times in {path}. Use replace_all=true or provide more context to make it unique.",
-                    is_error=True,
-                )
-            updated = original.replace(old, new) if replace_all else original.replace(old, new, 1)
+
+            # Fix 1 (original-based matching, two-phase):
+            # Phase 1 — validate EVERY old_string against the original file before
+            #   changing anything.  This matches coding-agent-flow semantics: you cannot
+            #   reference text that only exists after a previous edit in the same batch.
+            #   Fuzzy normalisation (CRLF / trailing-ws) is propagated forward so that
+            #   subsequent lookups work in the same normalised space.
+            pre_validated: list[tuple[str, str, bool]] = []
+            check_text = original  # accumulates normalisation; never modified by new_strings
+            for idx, (old, new, replace_all) in enumerate(edits):
+                if not old:
+                    return ToolResult(content="Error: old_string must not be empty", is_error=True)
+                if old not in check_text:
+                    # Fix 2: fuzzy match (CRLF + trailing whitespace) against original
+                    match = _fuzzy_find(check_text, old)
+                    if match is None:
+                        ctx = f" (edit {idx+1}/{len(edits)})" if len(edits) > 1 else ""
+                        return ToolResult(
+                            content=f"old_string not found in {path}{ctx}; fuzzy match also failed",
+                            is_error=True,
+                        )
+                    old, check_text = match  # propagate normalisation for remaining lookups
+                count = check_text.count(old)
+                if count > 1 and not replace_all:
+                    return ToolResult(
+                        content=f"old_string appears {count} times in {path} - use replace_all=true or add more context",
+                        is_error=True,
+                    )
+                pre_validated.append((old, new, replace_all))
+
+            # Phase 2 — apply sequentially to a working copy of the (possibly
+            #   normalised) original.  old_strings reference pre-edit text only.
+            working = check_text
+            result_lines: list[str] = []
+            for old, new, replace_all in pre_validated:
+                replaced = working.count(old) if replace_all else 1
+                working = working.replace(old, new) if replace_all else working.replace(old, new, 1)
+                result_lines.append(f"Replaced {replaced} occurrence(s)")
+
             with open(resolved, "w", encoding="utf-8") as f:
-                f.write(updated)
-            replaced = count if replace_all else 1
-            return ToolResult(content=f"Replaced {replaced} occurrence(s) in {path}")
+                f.write(working)
+
+            if len(edits) == 1:
+                return ToolResult(content=f"{result_lines[0]} in {path}")
+            return ToolResult(content=f"Applied {len(edits)} edits to {path}: " + "; ".join(result_lines))
+
         except FileNotFoundError:
             return ToolResult(content=f"File not found: {path}", is_error=True)
         except Exception as exc:
             return ToolResult(content=str(exc), is_error=True)
-
 # ── GrepTool ──────────────────────────────────────────────────────────────────
 
 class GrepTool:

@@ -45,6 +45,7 @@ Jump directly to the symbol — grep it in the file rather than scanning.
 | cwd injection into tools | `loop.py` → `_CwdPatchedRegistry`, `_CwdBoundTool`, `make_config()` |
 | all agent event types | `loop.py` → `AgentEvent` union + 12 frozen dataclasses above it |
 | agent loop entry point | `loop.py` → `agent_loop()` |
+| agent convenience drain | `loop.py` → `run_agent()` |
 | agent config factory | `loop.py` → `make_config()` |
 | all message types | `provider.py` → `UserMessage`, `AssistantMessage`, `ToolResultMessage` |
 | content block types | `provider.py` → `TextContent`, `ThinkingContent`, `ToolCallContent` |
@@ -197,6 +198,8 @@ Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig
 | Policy | Location |
 |---|---|
 | Turn completeness: partial assistant messages never appended on error/abort | `loop.py` → `_stream_one_turn()` — only appends `assistant_msg` on `DoneEvent` |
+| Abort completeness: remaining unexecuted tool calls get placeholder error results before `AbortedAgentEvent` | `loop.py` → tool execution loop, `tool_calls[i + 1:]` fill |
+| Max-turns exits via `DoneAgentEvent(result.aborted=True)` — single exit path for callers | `loop.py` → end of `agent_loop()` while loop |
 | Tool result truncation at 50 KB (loop-time, before context append) | `loop.py` → `_truncate_tool_result()`, `_MAX_TOOL_BYTES` |
 | Tool output cap at 50 KB (tool-time, before returning) | `tools.py` → `_cap()`, `_MAX_OUTPUT` |
 | Path sandboxing (cwd enforcement, reject `../` escapes) | `tools.py` → `_sandbox()` |

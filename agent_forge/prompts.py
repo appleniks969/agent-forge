@@ -15,6 +15,7 @@ Owns: build_system_prompt() (REPL variant), _load_agents_doc() (AGENTS.md →
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .context import ContextWindow, SectionName, SystemPrompt
 from .session import load_memory_deduped
@@ -61,7 +62,38 @@ _CHAT_GUIDELINES = (
 )
 
 
-def build_system_prompt(cfg: "ChatConfig", tool_registry: object) -> SystemPrompt:  # noqa: F821
+def _build_tools_section(tool_registry: Any) -> str:
+    """
+    Build the tools section for the system prompt.
+
+    Built-in tools use the carefully-worded descriptions defined in _TOOLS_SECTION.
+    Plugin-contributed tools are appended using their own Tool.description attributes.
+    """
+    base = _TOOLS_SECTION
+    try:
+        builtin_names = {"Bash", "Read", "Write", "Edit", "Grep", "Find"}
+        plugin_names = [
+            n for n in (tool_registry.names() if hasattr(tool_registry, "names") else [])
+            if n not in builtin_names
+        ]
+        if not plugin_names:
+            return base
+        extra_lines = ["\nPlugin tools:"]
+        for tname in plugin_names:
+            tool = tool_registry.get(tname)
+            desc = (getattr(tool, "description", "") or "").strip()
+            extra_lines.append(f"- {tname}: {desc}" if desc else f"- {tname}")
+        return base + "\n".join(extra_lines)
+    except Exception:
+        return base
+
+
+def build_system_prompt(
+    cfg: "ChatConfig",
+    tool_registry: Any,
+    *,
+    plugin_registry: Any = None,
+) -> SystemPrompt:  # noqa: F821
     sp = SystemPrompt()
 
     sp.register(SectionName.IDENTITY, lambda: (
@@ -69,11 +101,16 @@ def build_system_prompt(cfg: "ChatConfig", tool_registry: object) -> SystemPromp
         "You help users by reading files, executing commands, editing code, and writing new files.\n"
         "You are operating in interactive chat mode — a human is reading your replies and may correct you between turns."
     ))
-    sp.register(SectionName.TOOLS, lambda: _TOOLS_SECTION)
+    # Tools section is dynamic so plugin-contributed tools appear automatically
+    sp.register(SectionName.TOOLS, lambda: _build_tools_section(tool_registry))
     sp.register(SectionName.GUIDELINES, lambda: _CHAT_GUIDELINES)
 
     agents_md = _load_agents_doc(cfg.cwd)
     sp.register(SectionName.AGENTS_DOC, lambda: agents_md)
+
+    # Fix 6: wire skills into the system prompt so the LLM knows they exist
+    skills_summary = _discover_skills(cfg.cwd)
+    sp.register(SectionName.SKILLS, lambda: skills_summary)
 
     memory = load_memory_deduped(cfg.cwd, [agents_md or ""])
     sp.register(SectionName.MEMORY, lambda: memory if memory.strip() else None)
@@ -90,7 +127,52 @@ def build_system_prompt(cfg: "ChatConfig", tool_registry: object) -> SystemPromp
     if cfg.custom_system_prompt:
         sp.register(SectionName.CUSTOM, lambda: cfg.custom_system_prompt)
 
+    # Inject sections from PromptPlugins (appended as volatile extras, no caching)
+    if plugin_registry is not None:
+        plugin_registry.inject_prompt_sections(sp)
+
     return sp
+
+
+def _discover_skills(cwd: str) -> str | None:
+    """
+    Fix 6: discover skill markdown files in <cwd>/.agent-forge/skills/.
+    Returns a one-line-per-skill summary, e.g.:
+      Available skills:
+      /implement — implement a feature end-to-end from spec to tests
+      /review — review code for correctness, style, and test coverage
+    Returns None when no skill files exist (section omitted from system prompt).
+    """
+    skills_dir = Path(cwd) / ".agent-forge" / "skills"
+    if not skills_dir.is_dir():
+        return None
+    lines: list[str] = []
+    for skill_file in sorted(skills_dir.glob("*.md")):
+        try:
+            text = skill_file.read_text(encoding="utf-8").strip()
+            # Derive the skill name: strip .md, keep leading /
+            skill_name = "/" + skill_file.stem.lstrip("/")
+            # First non-empty, non-heading line is the description
+            description = ""
+            for line in text.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    description = line[:120]
+                    break
+            if not description:
+                # Fall back to the first heading content
+                for line in text.splitlines():
+                    stripped = line.lstrip("# ").strip()
+                    if stripped:
+                        description = stripped[:120]
+                        break
+            if description:
+                lines.append(f"{skill_name} — {description}")
+        except Exception:
+            continue
+    if not lines:
+        return None
+    return "Available skills:\n" + "\n".join(lines)
 
 
 def _load_agents_doc(cwd: str) -> str | None:

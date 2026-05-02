@@ -28,10 +28,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,50 @@ OAUTH_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
 
 def _is_oauth(api_key: str) -> bool:
     return "sk-ant-oat" in api_key
+
+# ── Fix 8: surrogate sanitization ────────────────────────────────────────────
+
+_SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+
+def _sanitize_surrogates(text: str) -> str:
+    """Replace lone UTF-16 surrogates (U+D800–U+DFFF) with U+FFFD.
+    Lone surrogates are valid in Python str but crash JSON/UTF-8 serialization,
+    which the Anthropic SDK hits on certain source files."""
+    return _SURROGATE_RE.sub('\ufffd', text)
+
+# ── Fix 7: streaming JSON repair ──────────────────────────────────────────────
+
+def _repair_json(raw: str) -> dict:
+    """Parse possibly-truncated streaming JSON with progressive repair.
+    Falls back to {} (not {"_raw": ...}) so tools receive clean missing-arg
+    errors rather than an unexpected _raw key crashing the call."""
+    if not raw or raw.isspace():
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # Pass 1: balance open braces / brackets
+    repaired = raw
+    open_brackets = max(0, repaired.count("[") - repaired.count("]"))
+    open_braces   = max(0, repaired.count("{") - repaired.count("}"))
+    repaired += "]" * open_brackets + "}" * open_braces
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        pass
+    # Pass 2: strip trailing incomplete token then re-balance
+    for suffix in ('", ', '",', '"', ', ', ',', '\\'):
+        t = raw.rstrip()
+        if t.endswith(suffix):
+            t = t[: -len(suffix)]
+            t += "]" * max(0, t.count("[") - t.count("]"))
+            t += "}" * max(0, t.count("{") - t.count("}"))
+            try:
+                return json.loads(t)
+            except json.JSONDecodeError:
+                continue
+    return {}
 
 def _supports_adaptive_thinking(model_id: str) -> bool:
     """Sonnet 4.6 / Opus 4.6+ accept {type:"adaptive"} thinking — model self-budgets."""
@@ -260,13 +306,23 @@ _RETRY_CODES = {429, 500, 502, 503, 529}
 class AnthropicProvider:
     """ACL: Anthropic Messages API → StreamEvent. Carries its own api_key."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        cwd: str = ".",
+        project_root: str | None = None,
+    ) -> None:
         self._api_key = (
             api_key
             or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
             or os.environ.get("ANTHROPIC_API_KEY")
             or ""
         )
+        self._cwd = cwd
+        # Fix 10: explicit project_root takes priority; falls back to cwd.
+        # Autonomous mode passes cfg.repo_path so the worktree (a sibling of
+        # the repo) still detects .agent-forge/ correctly.
+        self._project_root = project_root or cwd
 
     async def stream(
         self,
@@ -285,6 +341,12 @@ class AnthropicProvider:
         is_oauth = _is_oauth(api_key)
         betas: list[str] = []
 
+        # Fix 10: 1-hour TTL when running inside a project that has .agent-forge/.
+        # Use project_root (set to repo_path by autonomous mode) so that worktrees,
+        # which are sibling directories without .agent-forge/, are still detected.
+        _project = Path(self._project_root, ".agent-forge").exists()
+        _cache_ctrl: dict = {"type": "ephemeral", "ttl": "1h"} if _project else {"type": "ephemeral"}
+
         if is_oauth:
             client = _anthropic.AsyncAnthropic(
                 auth_token=api_key,
@@ -295,32 +357,41 @@ class AnthropicProvider:
                 },
             )
             betas.extend(["claude-code-20250219", "oauth-2025-04-20"])
-            system_blocks = [{"type": "text", "text": OAUTH_IDENTITY, "cache_control": {"type": "ephemeral"}}]
+            system_blocks = [{"type": "text", "text": OAUTH_IDENTITY, "cache_control": _cache_ctrl}]
             real_system = "\n\n".join(s.text for s in system if s.text.strip())
         else:
             client = _anthropic.AsyncAnthropic(api_key=api_key)
             system_blocks = [
                 {"type": "text", "text": s.text,
-                 **({"cache_control": {"type": "ephemeral"}} if s.cache_control else {})}
+                 **({"cache_control": _cache_ctrl} if s.cache_control else {})}
                 for s in system if s.text.strip()
             ]
             real_system = ""
 
-        api_msgs = _to_api_messages(messages)
+        # Fix 9: stamp cache_control on the last user message so the full
+        # prior conversation is served from cache on the next turn.
+        api_msgs = _to_api_messages(messages, cache_last=True, last_cache_ctrl=_cache_ctrl)
 
         # OAuth: inject system content as the first user message with cache_control.
         # Done at the api_msgs level so UserMessage stays clean (no cached= field).
         if is_oauth and real_system and not _system_already_injected(api_msgs, real_system):
             api_msgs = [{
                 "role": "user",
-                "content": [{"type": "text", "text": real_system, "cache_control": {"type": "ephemeral"}}],
+                "content": [{"type": "text", "text": real_system, "cache_control": _cache_ctrl}],
             }] + api_msgs
 
+        # Fix 11: eager_input_streaming lets the API begin processing tool args
+        # before the full JSON delta arrives, saving ~100-300 ms per tool call.
         api_tools: list[dict] = []
         for i, t in enumerate(tools):
-            entry: dict = {"name": t.name, "description": t.description, "input_schema": t.parameters}
+            entry: dict = {
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.parameters,
+                "eager_input_streaming": True,
+            }
             if i == len(tools) - 1:
-                entry["cache_control"] = {"type": "ephemeral"}
+                entry["cache_control"] = _cache_ctrl
             api_tools.append(entry)
 
         # Thinking-mode routing:
@@ -457,7 +528,7 @@ async def _do_stream(
                 delta = raw.delta
                 if delta.type == "text_delta":
                     _dbg(f"text_delta           idx={raw.index} len={len(delta.text)}")
-                    yield TextDeltaEvent(delta=delta.text)
+                    yield TextDeltaEvent(delta=_sanitize_surrogates(delta.text))  # Fix 8
                 elif delta.type == "thinking_delta":
                     _dbg(f"thinking_delta       idx={raw.index} len={len(delta.thinking)}")
                     yield ThinkingDeltaEvent(delta=delta.thinking)
@@ -475,10 +546,7 @@ async def _do_stream(
                     if blk.type == "tool_use":
                         # ToolCallEndEvent carries the fully-parsed args
                         raw_args = tool_arg_bufs.get(blk.id, "{}")
-                        try:
-                            args = json.loads(raw_args) if raw_args else {}
-                        except json.JSONDecodeError:
-                            args = {"_raw": raw_args}
+                        args = _repair_json(raw_args)  # Fix 7: repair truncated streaming JSON
                         yield ToolCallEndEvent(id=blk.id, name=blk.name, arguments=args)
                     else:
                         # text / thinking — emit ContentBlockEndEvent
@@ -525,15 +593,12 @@ def _build_assistant_msg(
     blocks: list[ContentBlock] = []
     for blk in content_blocks:
         if blk.type == "text":
-            blocks.append(TextContent(text=blk.text))
+            blocks.append(TextContent(text=_sanitize_surrogates(blk.text)))  # Fix 8
         elif blk.type == "thinking":
             blocks.append(ThinkingContent(thinking=blk.thinking, signature=getattr(blk, "signature", None)))
         elif blk.type == "tool_use":
             raw = tool_arg_bufs.get(blk.id, "{}")
-            try:
-                args = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
-                args = {}
+            args = _repair_json(raw)  # Fix 7
             blocks.append(ToolCallContent(id=blk.id, name=blk.name, arguments=args))
     return AssistantMessage(
         content=tuple(blocks),
@@ -543,8 +608,15 @@ def _build_assistant_msg(
     )
 
 
-def _to_api_messages(messages: list[Message]) -> list[dict]:
-    """Convert internal Message types to Anthropic API format, merging tool results."""
+def _to_api_messages(
+    messages: list[Message],
+    *,
+    cache_last: bool = False,
+    last_cache_ctrl: dict | None = None,
+) -> list[dict]:
+    """Convert internal Message types to Anthropic API format, merging tool results.
+    Fix 9: when cache_last=True, stamps cache_control on the last user message
+    so the full prior conversation is read from cache on every subsequent turn."""
     result: list[dict] = []
     pending_tool_results: list[ToolResultMessage] = []
 
@@ -569,15 +641,15 @@ def _to_api_messages(messages: list[Message]) -> list[dict]:
 
         if isinstance(msg, UserMessage):
             if isinstance(msg.content, str):
-                result.append({"role": "user", "content": msg.content})
+                result.append({"role": "user", "content": _sanitize_surrogates(msg.content)})  # Fix 8
             else:
-                result.append({"role": "user", "content": [{"type": "text", "text": c.text} for c in msg.content]})
+                result.append({"role": "user", "content": [{"type": "text", "text": _sanitize_surrogates(c.text)} for c in msg.content]})  # Fix 8
 
         elif isinstance(msg, AssistantMessage):
             api_content: list[dict] = []
             for blk in msg.content:
                 if isinstance(blk, TextContent):
-                    api_content.append({"type": "text", "text": blk.text})
+                    api_content.append({"type": "text", "text": _sanitize_surrogates(blk.text)})  # Fix 8
                 elif isinstance(blk, ThinkingContent):
                     entry: dict = {"type": "thinking", "thinking": blk.thinking}
                     if blk.signature:
@@ -588,13 +660,29 @@ def _to_api_messages(messages: list[Message]) -> list[dict]:
             result.append({"role": "assistant", "content": api_content})
 
     flush_tools()
+
+    # Fix 9: cache_control on the last user message — covers all prior context.
+    if cache_last and result:
+        ctrl = last_cache_ctrl or {"type": "ephemeral"}
+        for i in range(len(result) - 1, -1, -1):
+            msg = result[i]
+            if msg.get("role") == "user":
+                content = msg["content"]
+                if isinstance(content, str):
+                    result[i] = {**msg, "content": [{"type": "text", "text": content, "cache_control": ctrl}]}
+                elif isinstance(content, list) and content:
+                    last_block = dict(content[-1])
+                    last_block["cache_control"] = ctrl
+                    result[i] = {**msg, "content": list(content[:-1]) + [last_block]}
+                break
+
     return result
 
 
 def _tool_result_block(r: ToolResultMessage) -> dict:
     """Build a single tool_result API block, supporting str or structured content."""
     if isinstance(r.content, str):
-        content: str | list = r.content
+        content: str | list = _sanitize_surrogates(r.content)  # Fix 8
     else:
         content = []
         for blk in r.content:

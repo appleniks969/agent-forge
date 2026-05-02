@@ -475,9 +475,25 @@ class SystemPrompt:
 
     def __init__(self) -> None:
         self._sections: dict[SectionName, _Section] = {}
+        # Plugin-contributed extra sections (appended after named sections, no caching)
+        self._extra_sections: list[tuple[str, Callable[[], str | None]]] = []
 
     def register(self, name: SectionName, compute: Callable[[], str | None]) -> None:
         self._sections[name] = _Section(name=name, compute=compute)
+
+    def register_extra(
+        self,
+        name: str,
+        compute: Callable[[], str | None],
+    ) -> None:
+        """
+        Register a plugin-contributed section.
+
+        Sections added here are appended AFTER all named (SectionName) sections
+        in the order they were registered.  They are always volatile (cache_group 3
+        — never cached) so they do not interfere with Anthropic prompt-caching.
+        """
+        self._extra_sections.append((name, compute))
 
     def build(self) -> list[SystemPromptSection]:
         """
@@ -493,7 +509,16 @@ class SystemPrompt:
                 resolved.append((name, value))
 
         if not resolved:
-            return []
+            # Still process extras even when no named sections resolved
+            extras_only: list[SystemPromptSection] = []
+            for _ename, efn in self._extra_sections:
+                try:
+                    ev = efn()
+                except Exception:
+                    ev = None
+                if ev and ev.strip():
+                    extras_only.append(SystemPromptSection(text=ev, cache_control=False))
+            return extras_only
 
         # Find last index per cache group (groups 0-2 get cache_control)
         last_in_group: dict[int, int] = {}
@@ -506,6 +531,16 @@ class SystemPrompt:
         for i, (name, text) in enumerate(resolved):
             cache = (name.cache_group < 3 and last_in_group.get(name.cache_group) == i)
             result.append(SystemPromptSection(text=text, cache_control=cache))
+
+        # Append plugin extra sections — always volatile, never cached
+        for _ename, efn in self._extra_sections:
+            try:
+                ev = efn()
+            except Exception:
+                ev = None
+            if ev and ev.strip():
+                result.append(SystemPromptSection(text=ev, cache_control=False))
+
         return result
 
     def invalidate_session(self) -> None:
@@ -518,3 +553,4 @@ class SystemPrompt:
     def invalidate_all(self) -> None:
         for sec in self._sections.values():
             sec.invalidate()
+        # Extra sections use lambdas (called on every build), so nothing to invalidate

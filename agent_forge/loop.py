@@ -9,8 +9,9 @@ generator that can be tested without disk I/O.
 
 Owns: agent_loop() (the core async generator), all AgentEvent frozen dataclasses,
       AgentConfig, AgentResult, make_config() (factory that injects cwd into the
-      tool registry), _CwdPatchedRegistry / _CwdBoundTool, retry logic
-      (_retry_delay), tool result truncation (_truncate_tool_result).
+      tool registry), run_agent() (convenience drain), _CwdPatchedRegistry /
+      _CwdBoundTool, retry logic (_retry_delay), tool result truncation
+      (_truncate_tool_result).
 
 AgentEvent types (16):
   TurnStartEvent, TurnEndEvent
@@ -24,9 +25,13 @@ AgentEvent types (16):
 
 Policies enforced here:
   - Turn completeness: partial assistant messages are never appended on error/abort.
+  - Abort completeness: remaining unexecuted tool calls get placeholder error results
+    before AbortedAgentEvent so the API never sees an unmatched tool_use block.
   - Tool result truncation: results > 50 KB truncated before appending to context.
   - Retry: exponential backoff + jitter, up to 3 attempts per turn, max 30 s.
+  - Max-turns exits via DoneAgentEvent(result.aborted=True) — single exit path for callers.
   - api_key is encapsulated in AnthropicProvider; AgentConfig.provider carries it.
+    make_config() also accepts a pre-built provider= kwarg for testing.
 """
 from __future__ import annotations
 
@@ -208,7 +213,7 @@ class AgentConfig:
     provider: AnthropicProvider          # carries api_key; replaces bare api_key field
     tool_registry: ToolRegistry
     thinking: str = "off"
-    max_turns: int = 50
+    max_turns: int = 100  # Fix 4: raised from 50 to match coding-agent-flow
     max_tokens: int | None = None
     signal: asyncio.Event | None = None
     hooks: Any | None = None
@@ -342,7 +347,7 @@ async def agent_loop(
             return
 
         # Execute tool calls
-        for call in tool_calls:
+        for i, call in enumerate(tool_calls):
             blocked, reason = await _hook_before_tool(config.hooks, call, turn_number)
             if blocked:
                 yield ToolBlockedAgentEvent(id=call.id, name=call.name, reason=reason or "blocked")
@@ -388,13 +393,38 @@ async def agent_loop(
             ))
 
             if abort.is_set():
+                # API requires every tool_use block in the AssistantMessage to have a
+                # matching tool_result. Fill placeholder error results for all calls that
+                # were not yet executed so the context stays valid on resume.
+                for remaining in tool_calls[i + 1:]:
+                    placeholder = ToolResult(content="Operation aborted", is_error=True)
+                    result_msg = ToolResultMessage(
+                        tool_call_id=remaining.id, content=placeholder.content,
+                        is_error=True, timestamp=int(time.time() * 1000),
+                    )
+                    conversation.append(result_msg)
+                    all_result_messages.append(result_msg)
+                    all_tool_records.append(ToolCallRecord(
+                        id=remaining.id, name=remaining.name, args=remaining.arguments,
+                        result=placeholder,
+                    ))
                 yield AbortedAgentEvent()
                 return
 
         yield TurnEndEvent(turn=turn_number, duration_ms=(time.perf_counter() - turn_start) * 1000)
         # Loop continues — tool results now in context, LLM called again
 
-    yield ErrorAgentEvent(error=f"Reached max turns ({config.max_turns})", retryable=False)
+    # Max turns reached — emit DoneAgentEvent (aborted=True) so callers have a
+    # single exit path. AgentResult.aborted distinguishes this from a clean finish.
+    result = AgentResult(
+        text="",
+        tool_calls=all_tool_records,
+        messages=list(all_result_messages),
+        usage=total_usage,
+        turns=turn_number,
+        aborted=True,
+    )
+    yield DoneAgentEvent(result=result)
 
 
 async def _stream_one_turn(
@@ -494,21 +524,32 @@ async def _stream_one_turn(
 
 def make_config(
     model: Model,
-    api_key: str,
+    api_key: str | None,
     system_prompt: list[SystemPromptSection],
     tool_registry: ToolRegistry,
     cwd: str,
     thinking: str = "off",
-    max_turns: int = 50,
+    max_turns: int = 100,  # Fix 4: raised from 50
+    project_root: str | None = None,
     max_tokens: int | None = None,
     signal: asyncio.Event | None = None,
     hooks: Any | None = None,
+    *,
+    provider: AnthropicProvider | None = None,
 ) -> AgentConfig:
     """
     Factory: build AgentConfig, injecting cwd into tool registry execution
     and encapsulating api_key inside an AnthropicProvider instance.
+
+    Pass provider= directly (e.g. a mock) to skip AnthropicProvider construction —
+    useful in tests. If provider is None, api_key must be supplied.
     """
-    provider = AnthropicProvider(api_key)
+    if provider is None:
+        if not api_key:
+            raise ValueError("Either api_key or provider must be supplied to make_config()")
+        # Fix 10: project_root lets autonomous mode point to the repo even when
+        # cwd is a worktree sibling that has no .agent-forge/ of its own.
+        provider = AnthropicProvider(api_key, cwd=cwd, project_root=project_root)
     patched = _CwdPatchedRegistry(tool_registry, cwd)
     return AgentConfig(
         model=model,
@@ -521,6 +562,37 @@ def make_config(
         signal=signal,
         hooks=hooks,
     )
+
+
+async def run_agent(
+    config: AgentConfig,
+    initial_messages: list[Message],
+    *,
+    on_event: Any | None = None,
+) -> AgentResult:
+    """
+    Convenience wrapper: drain agent_loop() and return the final AgentResult.
+
+    on_event — optional async or sync callable(AgentEvent) called for every
+               yielded event before run_agent processes it. Useful for logging
+               or rendering in non-generator contexts.
+
+    Raises RuntimeError on ErrorAgentEvent (fatal, non-retryable API failure).
+    AbortedAgentEvent and max-turns both surface as AgentResult(aborted=True)
+    via the terminal DoneAgentEvent.
+    """
+    async for event in agent_loop(config, initial_messages):
+        if on_event is not None:
+            if asyncio.iscoroutinefunction(on_event):
+                await on_event(event)
+            else:
+                on_event(event)
+        if isinstance(event, DoneAgentEvent):
+            return event.result
+        if isinstance(event, ErrorAgentEvent) and not event.retryable:
+            raise RuntimeError(f"Agent error: {event.error}")
+    # Unreachable — agent_loop always terminates with DoneAgentEvent or raises above.
+    raise RuntimeError("agent_loop ended without DoneAgentEvent")
 
 
 class _CwdPatchedRegistry(ToolRegistry):

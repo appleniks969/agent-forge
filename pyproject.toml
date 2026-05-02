@@ -13,6 +13,22 @@ dependencies = [
 [project.scripts]
 agent-forge = "agent_forge.chat:main"
 
+# ── Plugin entry-point group ──────────────────────────────────────────────────
+# Third-party packages can contribute plugins by declaring entries under this
+# group in their own pyproject.toml:
+#
+#   [project.entry-points."agent_forge.plugins"]
+#   my_plugin = "my_package.plugin:plugin"   # object reference
+#   my_plugin = "my_package.plugin:MyPlugin" # class reference (auto-instantiated)
+#
+# Alternatively, drop a .py file into ~/.agent-forge/plugins/ (global) or
+# <cwd>/.agent-forge/plugins/ (project) — no installation required.
+# Configure plugins via <cwd>/.agent-forge/plugins.toml:
+#   [plugins.my_plugin_name]
+#   enabled  = true
+#   api_key  = "..."
+#   base_url = "http://localhost:11434"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
