@@ -23,7 +23,7 @@ import enum
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .provider import SystemPromptSection
+from .messages import SystemPromptSection
 
 
 class SectionName(enum.StrEnum):

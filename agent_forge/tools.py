@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .provider import ToolDefinition, ToolResult
+from .messages import ToolDefinition, ToolResult
 
 # ── Tool protocol ─────────────────────────────────────────────────────────────
 

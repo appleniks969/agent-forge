@@ -37,8 +37,9 @@ from prompt_toolkit.styles import Style as PtkStyle
 
 from .context import ContextWindow
 from .loop import AgentResult, DoneAgentEvent, agent_loop, make_config
+from .messages import UserMessage
+from .models import DEFAULT_MODEL, MODELS, Model
 from .prompts import build_system_prompt
-from .provider import DEFAULT_MODEL, MODELS, Model, UserMessage
 from .renderer import dim, bold, green, red, yellow, render_event, print_footer
 from .session import (
     append_message, append_metadata, latest_session_id,
@@ -250,7 +251,7 @@ async def run_chat(cfg: ChatConfig) -> None:
             ctx.sync_total_tokens(result.usage.input + result.usage.cache_read)
             tok = ctx.estimate_tokens()
             session_ctx_pct = tok / cfg.model.context_window * 100
-            from .provider import TokenUsage as TU
+            from .messages import TokenUsage as TU
             session_usage = TU(
                 input=0, output=0,
                 cache_read=session_cache_read,
@@ -261,7 +262,7 @@ async def run_chat(cfg: ChatConfig) -> None:
 
         if result:
             # Persist messages — AssistantMessage.usage is self-contained now
-            from .provider import AssistantMessage as AM
+            from .messages import AssistantMessage as AM
             for msg in result.messages:
                 usage = msg.usage if isinstance(msg, AM) else None
                 messages.append(msg)
@@ -328,7 +329,7 @@ def _extract_learnings(messages: list) -> list[str]:
     """Simple heuristic: extract correction signals from user messages."""
     learnings: list[str] = []
     correction_markers = ["don't", "instead of", "use ", "always ", "never "]
-    from .provider import UserMessage as UM
+    from .messages import UserMessage as UM
     for msg in messages:
         if not isinstance(msg, UM):
             continue

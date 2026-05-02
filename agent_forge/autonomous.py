@@ -30,10 +30,9 @@ from .loop import (
     AgentResult, DoneAgentEvent, HookDecision, NoopHooks,
     agent_loop, make_config,
 )
+from .messages import ToolCallContent, ToolResult, UserMessage, ZERO_USAGE
+from .models import DEFAULT_MODEL, Model
 from .prompts import _TOOLS_SECTION, _build_tools_section, _discover_skills
-from .provider import (
-    DEFAULT_MODEL, Model, ToolCallContent, ToolResult, UserMessage, ZERO_USAGE,
-)
 from .renderer import render_event
 from .system_prompt import SectionName, SystemPrompt
 from .tools import default_registry

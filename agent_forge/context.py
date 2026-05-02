@@ -20,10 +20,11 @@ import enum
 import logging
 from dataclasses import dataclass
 
-from .provider import (
-    AssistantMessage, ImageContent, Message, Model,
+from .messages import (
+    AssistantMessage, ImageContent, Message,
     TextContent, ThinkingContent, ToolResultMessage, UserMessage,
 )
+from .models import Model
 
 # Re-export SystemPrompt / SectionName from their new home so existing imports
 # `from agent_forge.context import SystemPrompt, SectionName` keep working.

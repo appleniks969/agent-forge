@@ -25,7 +25,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from .provider import (
+from .messages import (
     AssistantMessage, ImageContent, Message, TextContent, ThinkingContent,
     ToolCallContent, ToolResultMessage, TokenUsage, UserMessage, ZERO_USAGE,
 )

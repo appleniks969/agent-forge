@@ -39,7 +39,7 @@ from .loop import (
     ToolResultAgentEvent, TurnEndEvent, TurnStartEvent,
     CompactionAgentEvent,
 )
-from .provider import TokenUsage
+from .messages import TokenUsage
 
 # ── ANSI helpers ──────────────────────────────────────────────────────────────
 
