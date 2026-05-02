@@ -20,14 +20,20 @@ import asyncio
 import enum
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .loop import AgentResult, DoneAgentEvent, agent_loop, make_config
+from .loop import (
+    AgentResult, DoneAgentEvent, HookDecision, NoopHooks,
+    agent_loop, make_config,
+)
 from .prompts import _TOOLS_SECTION, _build_tools_section, _discover_skills
-from .provider import DEFAULT_MODEL, Model, UserMessage, ZERO_USAGE
+from .provider import (
+    DEFAULT_MODEL, Model, ToolCallContent, ToolResult, UserMessage, ZERO_USAGE,
+)
 from .renderer import render_event
 from .system_prompt import SectionName, SystemPrompt
 from .tools import default_registry
@@ -53,6 +59,39 @@ class FlowResult:
     state: FlowState
     output: str
     error: str | None = None
+
+
+# ── BashGuardHook ─────────────────────────────────────────────────────────────
+#
+# Block destructive Bash commands during autonomous execution. The agent runs
+# inside a worktree so 'rm -rf .' would only nuke the worktree, but commands
+# that escape the worktree (sudo, push --force, hard-reset against origin) can
+# damage the host repo or system. This hook is the demonstration that
+# AgentConfig.hooks (a Hooks Protocol seam) is wired all the way through.
+#
+# Pattern set is intentionally small — it's the floor, not the ceiling.
+
+class BashGuardHook(NoopHooks):
+    """Veto destructive Bash commands. Returns None for everything else."""
+
+    _BLOCK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+        (re.compile(r"\bsudo\b"),                            "sudo not allowed in autonomous mode"),
+        (re.compile(r"\brm\s+-rf?\s+(/|\$HOME|~)(\s|$)"),    "rm -rf on system / home path"),
+        (re.compile(r"\bgit\s+push\s+(\S+\s+)*(-f|--force)"), "force-push to remote"),
+        (re.compile(r"\bgit\s+reset\s+--hard\s+origin/"),    "hard reset against remote"),
+        (re.compile(r":\(\)\s*\{[^}]*\}\s*;\s*:"),           "fork bomb"),
+    ]
+
+    async def before_tool_call(
+        self, call: ToolCallContent, turn: int,
+    ) -> HookDecision | None:
+        if call.name != "Bash":
+            return None
+        cmd = str(call.arguments.get("command", ""))
+        for pattern, reason in self._BLOCK_PATTERNS:
+            if pattern.search(cmd):
+                return HookDecision(block=True, reason=reason)
+        return None
 
 
 @dataclass
@@ -298,6 +337,7 @@ class AutonomousFlow:
             thinking=self._cfg.thinking,
             max_turns=self._cfg.max_turns,
             project_root=self._cfg.repo_path,
+            hooks=BashGuardHook(),    # block destructive Bash in autonomous mode
         )
 
         # Fix 3: prepend the plan so the LLM has a concrete roadmap

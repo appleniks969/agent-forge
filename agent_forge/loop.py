@@ -11,7 +11,7 @@ Owns: agent_loop() (the core async generator), all AgentEvent frozen dataclasses
       AgentConfig, AgentResult, make_config() (factory that injects cwd into the
       tool registry), run_agent() (convenience drain), _CwdPatchedRegistry /
       _CwdBoundTool, retry logic (_retry_delay), tool result truncation
-      (_truncate_tool_result).
+      (_truncate_tool_result), Hooks Protocol + NoopHooks default + HookDecision.
 
 AgentEvent types (16):
   TurnStartEvent, TurnEndEvent
@@ -41,7 +41,7 @@ import random
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from .provider import (
     AnthropicProvider,
@@ -61,6 +61,59 @@ _MAX_DELAY = 30.0
 
 def _retry_delay(attempt: int) -> float:
     return min(_BASE_DELAY * (2 ** attempt) * random.uniform(0.75, 1.25), _MAX_DELAY)
+
+# ── Hooks Protocol ────────────────────────────────────────────────────────────
+#
+# Hooks let composition roots inject behaviour at three points without taking
+# a dependency on chat / autonomous internals: gate dangerous tool calls,
+# redact secrets from results, observe LLM calls, etc.
+#
+# All three methods return None for "no change". A non-None return:
+#   before_llm_call → replacement messages list
+#   before_tool_call → HookDecision (block=True, reason=…) to veto the call
+#   after_tool_call → replacement ToolResult (e.g. for redaction)
+#
+# AgentConfig.hooks defaults to NoopHooks; downstream code may replace it.
+
+@dataclass(frozen=True)
+class HookDecision:
+    block: bool = False
+    reason: str | None = None
+
+
+@runtime_checkable
+class Hooks(Protocol):
+    async def before_llm_call(
+        self, messages: list[Message], turn: int,
+    ) -> list[Message] | None: ...
+
+    async def before_tool_call(
+        self, call: ToolCallContent, turn: int,
+    ) -> HookDecision | None: ...
+
+    async def after_tool_call(
+        self, call: ToolCallContent, result: ToolResult, turn: int,
+    ) -> ToolResult | None: ...
+
+
+class NoopHooks:
+    """Default hooks implementation — every method returns None (no change)."""
+
+    async def before_llm_call(
+        self, messages: list[Message], turn: int,
+    ) -> list[Message] | None:
+        return None
+
+    async def before_tool_call(
+        self, call: ToolCallContent, turn: int,
+    ) -> HookDecision | None:
+        return None
+
+    async def after_tool_call(
+        self, call: ToolCallContent, result: ToolResult, turn: int,
+    ) -> ToolResult | None:
+        return None
+
 
 # ── Agent event types ─────────────────────────────────────────────────────────
 
@@ -216,7 +269,7 @@ class AgentConfig:
     max_turns: int = 100  # Fix 4: raised from 50 to match coding-agent-flow
     max_tokens: int | None = None
     signal: asyncio.Event | None = None
-    hooks: Any | None = None
+    hooks: Hooks = field(default_factory=NoopHooks)
 
 @dataclass(frozen=True)
 class AgentResult:
@@ -228,35 +281,22 @@ class AgentResult:
     aborted: bool
 
 # ── Hooks helpers ─────────────────────────────────────────────────────────────
+#
+# Thin wrappers around Hooks Protocol calls. They normalise the None-return
+# convention so the agent_loop body reads cleanly (no per-call None checks).
 
-async def _hook_before_llm(hooks: Any, messages: list[Message], turn: int) -> list[Message]:
-    if hooks is None:
-        return messages
-    fn = getattr(hooks, "before_llm_call", None)
-    if fn is None:
-        return messages
-    result = await fn(messages, {"turn": turn})
+async def _hook_before_llm(hooks: Hooks, messages: list[Message], turn: int) -> list[Message]:
+    result = await hooks.before_llm_call(messages, turn)
     return result if result is not None else messages
 
-async def _hook_before_tool(hooks: Any, call: ToolCallContent, turn: int) -> tuple[bool, str | None]:
-    if hooks is None:
-        return False, None
-    fn = getattr(hooks, "before_tool_call", None)
-    if fn is None:
-        return False, None
-    result = await fn({"id": call.id, "name": call.name, "args": call.arguments}, {"turn": turn})
-    if result is None:
-        return False, None
-    return result.get("block", False), result.get("reason")
+async def _hook_before_tool(hooks: Hooks, call: ToolCallContent, turn: int) -> HookDecision:
+    decision = await hooks.before_tool_call(call, turn)
+    return decision if decision is not None else HookDecision()
 
-async def _hook_after_tool(hooks: Any, call: ToolCallContent, result: ToolResult, turn: int) -> ToolResult | None:
-    if hooks is None:
-        return None
-    fn = getattr(hooks, "after_tool_call", None)
-    if fn is None:
-        return None
-    replacement = await fn({"id": call.id, "name": call.name, "args": call.arguments}, result, {"turn": turn})
-    return replacement if isinstance(replacement, ToolResult) else None
+async def _hook_after_tool(
+    hooks: Hooks, call: ToolCallContent, result: ToolResult, turn: int,
+) -> ToolResult | None:
+    return await hooks.after_tool_call(call, result, turn)
 
 # ── Tool result truncation ────────────────────────────────────────────────────
 
@@ -348,8 +388,9 @@ async def agent_loop(
 
         # Execute tool calls
         for i, call in enumerate(tool_calls):
-            blocked, reason = await _hook_before_tool(config.hooks, call, turn_number)
-            if blocked:
+            decision = await _hook_before_tool(config.hooks, call, turn_number)
+            if decision.block:
+                reason = decision.reason
                 yield ToolBlockedAgentEvent(id=call.id, name=call.name, reason=reason or "blocked")
                 tool_result = ToolResult(content=f"Tool call blocked: {reason}", is_error=True)
                 all_tool_records.append(ToolCallRecord(
@@ -533,7 +574,7 @@ def make_config(
     project_root: str | None = None,
     max_tokens: int | None = None,
     signal: asyncio.Event | None = None,
-    hooks: Any | None = None,
+    hooks: Hooks | None = None,
     *,
     provider: AnthropicProvider | None = None,
 ) -> AgentConfig:
@@ -560,7 +601,7 @@ def make_config(
         max_turns=max_turns,
         max_tokens=max_tokens if max_tokens is not None else model.max_tokens,
         signal=signal,
-        hooks=hooks,
+        hooks=hooks if hooks is not None else NoopHooks(),
     )
 
 
