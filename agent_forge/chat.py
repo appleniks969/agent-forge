@@ -35,13 +35,12 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.styles import Style as PtkStyle
 
-from .context import ContextWindow
-from .loop import AgentResult, make_config
+from .loop import AgentResult
 from .messages import UserMessage
 from .models import DEFAULT_MODEL, MODELS, Model
 from .prompts import build_system_prompt
 from .renderer import dim, bold, green, red, yellow, render_event, print_footer
-from .runner import drive
+from .runtime import AgentRuntime
 from .session import (
     append_message, append_metadata, latest_session_id,
     new_id, resume_session, update_memory,
@@ -120,13 +119,22 @@ async def run_chat(cfg: ChatConfig) -> None:
         append_metadata(session_id, cfg.model.id, cfg.cwd)
 
     system_prompt = build_system_prompt(cfg, tool_registry)
-    ctx = ContextWindow(model=cfg.model)
+    runtime = AgentRuntime(
+        model=cfg.model,
+        system_prompt=system_prompt,
+        tool_registry=tool_registry,
+        cwd=cfg.cwd,
+        api_key=cfg.api_key,
+        thinking=cfg.thinking,
+        max_turns=cfg.max_turns,
+        max_tokens=cfg.model.max_tokens,
+    )
     if messages:
-        ctx.init_from_existing(messages)
+        runtime.init_messages(messages)
 
     # Banner
     print(f"\n{bold('agent-forge')} {dim(f'v{__version__}')}")
-    print(dim(f"  Model: {cfg.model.id} · {cfg.model.context_window//1000}K ctx · /quit /clear /status"))
+    print(dim(f"  Model: {cfg.model.id} · {cfg.model.context_window//1000}K ctx · /quit /clear /status /remember"))
     print()
 
     # prompt_toolkit session — persistent history in ~/.agent-forge-history
@@ -160,26 +168,11 @@ async def run_chat(cfg: ChatConfig) -> None:
 
     abort: asyncio.Event | None = None
 
-    def _make_cfg():
-        sp_sections = system_prompt.build()
-        return make_config(
-            model=cfg.model,
-            api_key=cfg.api_key,
-            system_prompt=sp_sections,
-            tool_registry=tool_registry,
-            cwd=cfg.cwd,
-            thinking=cfg.thinking,
-            max_turns=cfg.max_turns,
-            max_tokens=cfg.model.max_tokens,
-            signal=abort,
-        )
-
     while True:
         try:
             user_input = await ptk_session.prompt_async("> ", bottom_toolbar=_toolbar)
         except (EOFError, KeyboardInterrupt):
             print()
-            _save_learnings(messages, cfg.cwd, cfg.verbose)
             break
 
         user_input = _expand_pastes(user_input.strip(), _paste_store)
@@ -188,22 +181,31 @@ async def run_chat(cfg: ChatConfig) -> None:
 
         # Slash commands
         if user_input in ("/quit", "/exit", "/q"):
-            _save_learnings(messages, cfg.cwd, cfg.verbose)
             break
+        if user_input.startswith("/remember "):
+            note = user_input[len("/remember "):].strip()
+            if not note:
+                print(red("Usage: /remember <text to save to memory>"))
+            else:
+                try:
+                    update_memory(cfg.cwd, [note], "project")
+                    print(green(f"[memory] Saved: {note[:60]}…" if len(note) > 60 else f"[memory] Saved: {note}"))
+                except Exception as exc:
+                    print(red(f"[memory] Save failed: {exc}"))
+            continue
         if user_input == "/clear":
             messages.clear()
-            ctx.clear()
-            system_prompt.invalidate_all()
+            runtime.clear()
             print(dim("Conversation cleared."))
             continue
         if user_input == "/status":
-            tok = ctx.estimate_tokens()
+            tok = runtime.context.estimate_tokens()
             pct = tok / cfg.model.context_window * 100
             print(f"{bold('── Status ──')}\n"
                   f"  Session: {session_id}\n"
                   f"  Model:   {cfg.model.id}\n"
                   f"  Context: ~{tok} tokens ({pct:.1f}%)\n"
-                  f"  Turns:   {ctx.current_turn}  Messages: {len(messages)}")
+                  f"  Turns:   {runtime.context.current_turn}  Messages: {len(messages)}")
             continue
         if user_input == "/model":
             print("Available models:")
@@ -213,7 +215,8 @@ async def run_chat(cfg: ChatConfig) -> None:
             new_id_input = (await ptk_session.prompt_async("Enter model id: ", bottom_toolbar=_toolbar)).strip()
             if new_id_input in MODELS:
                 cfg.model = MODELS[new_id_input]
-                ctx._model = cfg.model
+                runtime.model = cfg.model
+                runtime.context._model = cfg.model
                 system_prompt.invalidate_all()
                 print(green(f"Switched to {cfg.model.id}"))
             else:
@@ -225,16 +228,12 @@ async def run_chat(cfg: ChatConfig) -> None:
         messages.append(user_msg)
         append_message(session_id, user_msg)
 
-        # Build initial messages for this turn
-        initial_msgs = ctx.build_messages(user_msg)
         abort = asyncio.Event()
-        loop_cfg = _make_cfg()   # captures current `abort` via closure
-
         result: AgentResult | None = None
 
         try:
-            result = await drive(
-                loop_cfg, initial_msgs,
+            result = await runtime.run_turn(
+                user_msg, signal=abort,
                 on_event=lambda ev: render_event(ev, cfg.verbose),
             )
         except KeyboardInterrupt:
@@ -247,10 +246,7 @@ async def run_chat(cfg: ChatConfig) -> None:
             session_cache_read += result.usage.cache_read
             session_cache_write += result.usage.cache_write
 
-            # First sync: replace heuristic with real API count *before* the footer
-            # so ctx_pct displayed there reflects what the API actually saw.
-            ctx.sync_total_tokens(result.usage.input + result.usage.cache_read)
-            tok = ctx.estimate_tokens()
+            tok = runtime.context.estimate_tokens()
             session_ctx_pct = tok / cfg.model.context_window * 100
             from .messages import TokenUsage as TU
             session_usage = TU(
@@ -262,28 +258,18 @@ async def run_chat(cfg: ChatConfig) -> None:
         print()  # blank line after footer
 
         if result:
-            # Persist messages — AssistantMessage.usage is self-contained now
+            # Persist messages — AssistantMessage.usage is self-contained now.
+            # ContextWindow advance + pressure management happened inside run_turn().
             from .messages import AssistantMessage as AM
             for msg in result.messages:
                 usage = msg.usage if isinstance(msg, AM) else None
                 messages.append(msg)
                 append_message(session_id, msg, usage)
 
-            # Advance ContextWindow — receive() resets _synced_total because the
-            # window now contains new messages the API hasn't seen yet.
-            ctx.receive(
-                user_message=user_msg,
-                assistant_messages=[m for m in result.messages if not isinstance(m, UserMessage)],
-                tool_calls=result.tool_calls,
-            )
-            # Second sync: re-apply the real count so manage_pressure() uses it
-            # rather than falling back to the chars/4 heuristic for the new window.
-            ctx.sync_total_tokens(result.usage.input + result.usage.cache_read)
-
-            # Context pressure management
-            tier = await ctx.manage_pressure()
-            if cfg.verbose and tier.value != "none":
-                print(dim(f"[context] pressure tier: {tier.value}"))
+            if cfg.verbose:
+                tier = runtime.pressure_tier()
+                if tier.value != "none":
+                    print(dim(f"[context] pressure tier: {tier.value}"))
 
 
 # ── Single-prompt (non-interactive) mode ──────────────────────────────────────
@@ -291,51 +277,24 @@ async def run_chat(cfg: ChatConfig) -> None:
 async def _run_single_prompt(cfg: ChatConfig, prompt: str) -> None:
     tool_registry = default_registry()
     system_prompt = build_system_prompt(cfg, tool_registry)
-    loop_cfg = make_config(
+    runtime = AgentRuntime(
         model=cfg.model,
-        api_key=cfg.api_key,
-        system_prompt=system_prompt.build(),
+        system_prompt=system_prompt,
         tool_registry=tool_registry,
         cwd=cfg.cwd,
+        api_key=cfg.api_key,
         thinking=cfg.thinking,
         max_turns=cfg.max_turns,
         max_tokens=cfg.model.max_tokens,
     )
     user_msg = UserMessage(content=prompt)
-    result = await drive(
-        loop_cfg, [user_msg],
+    result = await runtime.run_turn(
+        user_msg,
         on_event=lambda ev: render_event(ev, cfg.verbose),
     )
     if result:
         ctx_pct = (result.usage.input + result.usage.cache_read) / cfg.model.context_window * 100
         print_footer(cfg.model.id, result.usage.cost, result.usage, result.turns, ctx_pct)
-
-
-# ── Memory helpers ────────────────────────────────────────────────────────────
-
-def _save_learnings(messages: list, cwd: str, verbose: bool) -> None:
-    try:
-        learnings = _extract_learnings(messages)
-        if learnings:
-            update_memory(cwd, learnings, "project")
-            if verbose:
-                print(dim(f"[memory] Saved {len(learnings)} learning(s)"))
-    except Exception:
-        pass
-
-
-def _extract_learnings(messages: list) -> list[str]:
-    """Simple heuristic: extract correction signals from user messages."""
-    learnings: list[str] = []
-    correction_markers = ["don't", "instead of", "use ", "always ", "never "]
-    from .messages import UserMessage as UM
-    for msg in messages:
-        if not isinstance(msg, UM):
-            continue
-        content = msg.content if isinstance(msg.content, str) else ""
-        if any(m in content.lower() for m in correction_markers) and len(content) < 200:
-            learnings.append(content)
-    return learnings[:5]
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

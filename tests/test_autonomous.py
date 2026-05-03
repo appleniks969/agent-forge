@@ -172,28 +172,32 @@ class TestBashGuardHook:
 
 
 class TestGateChecks:
-    def test_non_git_directory_rejected(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_non_git_directory_rejected(self, tmp_path):
         flow = AutonomousFlow(_cfg(str(tmp_path)))
-        err = flow._gate_checks()
+        err = await flow._gate_checks()
         assert err is not None
         assert "Not a git repository" in err
 
-    def test_clean_repo_passes(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_clean_repo_passes(self, tmp_path):
         repo = _git_repo(tmp_path / "r")
         flow = AutonomousFlow(_cfg(str(repo)))
-        assert flow._gate_checks() is None
+        assert await flow._gate_checks() is None
 
-    def test_dirty_repo_rejected(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_dirty_repo_rejected(self, tmp_path):
         repo = _git_repo(tmp_path / "r", dirty=True)
         flow = AutonomousFlow(_cfg(str(repo)))
-        err = flow._gate_checks()
+        err = await flow._gate_checks()
         assert err is not None
         assert "uncommitted changes" in err
 
-    def test_detached_head_rejected(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_detached_head_rejected(self, tmp_path):
         repo = _git_repo(tmp_path / "r", detached=True)
         flow = AutonomousFlow(_cfg(str(repo)))
-        err = flow._gate_checks()
+        err = await flow._gate_checks()
         assert err is not None
         assert "detached" in err.lower()
 
@@ -202,46 +206,50 @@ class TestGateChecks:
 
 
 class TestVerify:
-    def test_no_commands_passes(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_no_commands_passes(self, tmp_path):
         flow = AutonomousFlow(_cfg(str(tmp_path), verify_commands=[]))
         flow._worktree_path = str(tmp_path)
-        ok, msg = flow._verify()
+        ok, msg = await flow._verify()
         assert ok is True
         assert "no verify" in msg
 
-    def test_all_passing_commands(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_all_passing_commands(self, tmp_path):
         flow = AutonomousFlow(_cfg(
             str(tmp_path),
             verify_commands=["true", "echo hello"],
         ))
         flow._worktree_path = str(tmp_path)
-        ok, msg = flow._verify()
+        ok, msg = await flow._verify()
         assert ok is True
         assert "hello" in msg
         assert "$ true" in msg
         assert "$ echo hello" in msg
 
-    def test_fails_fast_on_first_nonzero(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_fails_fast_on_first_nonzero(self, tmp_path):
         flow = AutonomousFlow(_cfg(
             str(tmp_path),
             verify_commands=["true", "false", "echo never_runs"],
         ))
         flow._worktree_path = str(tmp_path)
-        ok, msg = flow._verify()
+        ok, msg = await flow._verify()
         assert ok is False
         # First two commands recorded, third never executed
         assert "$ true" in msg
         assert "$ false" in msg
         assert "never_runs" not in msg
 
-    def test_runs_in_worktree_cwd(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_runs_in_worktree_cwd(self, tmp_path):
         # Sentinel file in tmp_path; pwd should reveal it
         (tmp_path / "marker.txt").write_text("x")
         flow = AutonomousFlow(_cfg(
             str(tmp_path), verify_commands=["ls marker.txt"],
         ))
         flow._worktree_path = str(tmp_path)
-        ok, msg = flow._verify()
+        ok, msg = await flow._verify()
         assert ok is True
         assert "marker.txt" in msg
 

@@ -1,6 +1,9 @@
 """Smoke tests for tools — sandbox and EditTool fuzzy matching."""
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from agent_forge.tools import (
@@ -109,3 +112,47 @@ async def test_edit_tool_multi_edit_atomic(tmp_path):
 def test_default_registry_has_six_tools():
     reg = default_registry()
     assert set(reg.names()) == {"Bash", "Read", "Write", "Edit", "Grep", "Find"}
+
+
+# ── Phase 2: abort-signal propagation through BashTool ───────────────────────
+#
+# Today (pre-Phase-2) BashTool ignored the abort signal — Ctrl-C during a
+# `sleep 5` would wait the full 5 s. After Phase 2, the signal kills the child
+# within milliseconds and BashTool returns is_error=True with "aborted".
+
+@pytest.mark.asyncio
+async def test_bash_tool_aborts_promptly_on_signal(tmp_path):
+    signal = asyncio.Event()
+
+    async def fire_signal_after(delay: float) -> None:
+        await asyncio.sleep(delay)
+        signal.set()
+
+    asyncio.create_task(fire_signal_after(0.1))
+    started = time.perf_counter()
+    res = await BashTool().execute(
+        {"command": "sleep 5"}, cwd=str(tmp_path), signal=signal,
+    )
+    elapsed = time.perf_counter() - started
+
+    assert res.is_error, "expected is_error=True after abort"
+    assert "abort" in res.content.lower()
+    assert elapsed < 2.0, f"bash kept running for {elapsed:.2f}s after abort"
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_normal_command_still_works(tmp_path):
+    res = await BashTool().execute(
+        {"command": "echo hello"}, cwd=str(tmp_path),
+    )
+    assert not res.is_error
+    assert "hello" in res.content
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_timeout_returns_error(tmp_path):
+    res = await BashTool().execute(
+        {"command": "sleep 5", "timeout": 1}, cwd=str(tmp_path),
+    )
+    assert res.is_error
+    assert "timed out" in res.content.lower()

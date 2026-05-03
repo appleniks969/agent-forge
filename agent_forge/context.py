@@ -26,10 +26,6 @@ from .messages import (
 )
 from .models import Model
 
-# Re-export SystemPrompt / SectionName from their new home so existing imports
-# `from agent_forge.context import SystemPrompt, SectionName` keep working.
-from .system_prompt import SectionName, SystemPrompt  # noqa: F401  (re-export)
-
 logger = logging.getLogger(__name__)
 
 # ── Pressure tiers ────────────────────────────────────────────────────────────
@@ -72,7 +68,14 @@ def estimate_tokens(msg: Message) -> int:
         content = msg.content
         if isinstance(content, str):
             return len(content) // 4
-        return sum(len(c.text) for c in content) // 4
+        # Mixed TextContent / ImageContent — count text chars/4; flat 200 tokens per image.
+        total = 0
+        for c in content:
+            if isinstance(c, TextContent):
+                total += len(c.text) // 4
+            elif isinstance(c, ImageContent):
+                total += 200
+        return total
     elif isinstance(msg, AssistantMessage):
         total = 0
         for blk in msg.content:
@@ -90,6 +93,12 @@ def estimate_tokens_list(msgs: list[Message]) -> int:
 class ContextBudget:
     keep_recent_tokens: int
     recency_turns: int
+    # Per-tool-result eviction threshold used by P4. Tool results larger than
+    # this (in bytes) are replaced with a one-line notice on historical turns.
+    p4_max_bytes: int = 1024
+    # Tool-result truncation budget enforced by the agent loop *before* the
+    # result is appended to context. Mirrors tools._MAX_OUTPUT (50 KB).
+    tool_max_bytes: int = 50 * 1024
 
 def default_budget(model: Model) -> ContextBudget:
     return ContextBudget(
@@ -185,17 +194,17 @@ def _summarise_tool_calls(tool_calls: list) -> str:
 
 # ── P4 eviction ───────────────────────────────────────────────────────────────
 
-_P4_MAX_BYTES = 1024  # 1 KB — in-place eviction threshold for historical tool results
+_P4_MAX_BYTES = 1024  # default — overridable via ContextBudget.p4_max_bytes
 _P4_NOTICE = "[tool result evicted — use Read to re-examine if needed]"
 
-def evict_p4(msgs: list[Message]) -> list[Message]:
-    """Truncate ToolResultMessages > 1KB. Used on historical (non-newest) turns."""
+def evict_p4(msgs: list[Message], max_bytes: int = _P4_MAX_BYTES) -> list[Message]:
+    """Truncate ToolResultMessages > max_bytes. Used on historical (non-newest) turns."""
     result: list[Message] = []
     for msg in msgs:
         if isinstance(msg, ToolResultMessage):
             # Only evict string content; structured content (images) is kept as-is.
             content_bytes = msg.content.encode() if isinstance(msg.content, str) else b""
-            if len(content_bytes) > _P4_MAX_BYTES:
+            if len(content_bytes) > max_bytes:
                 result.append(ToolResultMessage(
                     tool_call_id=msg.tool_call_id, content=_P4_NOTICE,
                     is_error=msg.is_error, timestamp=msg.timestamp,
@@ -328,9 +337,10 @@ class ContextWindow:
         API-reported count is stale; estimate_tokens() will use the heuristic
         until the next sync_total_tokens() call.
         """
+        max_bytes = self._budget.p4_max_bytes
         for i in range(max(0, len(self._recent_turns) - 1)):
             turn = self._recent_turns[i]
-            turn.assistant_messages = evict_p4(turn.assistant_messages)
+            turn.assistant_messages = evict_p4(turn.assistant_messages, max_bytes=max_bytes)
             turn.tokens = estimate_tokens(turn.user_message) + estimate_tokens_list(turn.assistant_messages)
         self._synced_total = None   # evicted content changed the window; old API count is stale
 

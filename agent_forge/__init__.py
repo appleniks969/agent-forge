@@ -23,8 +23,16 @@ from .messages import (
 )
 from .models import DEFAULT_MODEL, MODELS, Model, ModelCost
 from .provider import LLMProvider
-from .anthropic_provider import AnthropicProvider
 from .tools import Tool, ToolRegistry, default_registry
+
+# AnthropicProvider import is best-effort: the SDK is the default but
+# architecturally optional (a different LLMProvider can be plugged in).
+# A missing SDK should not break `import agent_forge`; only attempts to
+# *use* AnthropicProvider should fail.
+try:
+    from .anthropic_provider import AnthropicProvider
+except ImportError:  # pragma: no cover - SDK missing in minimal installs
+    AnthropicProvider = None  # type: ignore[assignment,misc]
 from .context import (
     ContextWindow, ContextBudget, PressureTier,
     assess_pressure, ABSOLUTE_P4, ABSOLUTE_P3, ABSOLUTE_AGG,
@@ -40,9 +48,11 @@ from .loop import (
     Hooks, NoopHooks, HookDecision,
 )
 from .runner import drive
+from .runtime import AgentRuntime
 from .chat import ChatConfig, run_chat
 from .autonomous import (
-    AutonomousConfig, AutonomousFlow, BashGuardHook, FlowResult, run_autonomous,
+    AutonomousConfig, AutonomousFlow, BashGuardHook, FlowResult,
+    PathGuardHook, run_autonomous,
 )
 
 __all__ = [
@@ -62,6 +72,8 @@ __all__ = [
     "DoneAgentEvent", "TurnStartEvent", "TextDeltaAgentEvent", "ToolResultAgentEvent",
     "Hooks", "NoopHooks", "HookDecision",
     "drive",
+    "AgentRuntime",
     "ChatConfig", "run_chat",
-    "AutonomousConfig", "AutonomousFlow", "BashGuardHook", "FlowResult", "run_autonomous",
+    "AutonomousConfig", "AutonomousFlow", "BashGuardHook", "FlowResult",
+    "PathGuardHook", "run_autonomous",
 ]

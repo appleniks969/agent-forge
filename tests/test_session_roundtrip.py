@@ -37,6 +37,24 @@ def test_user_message_structured_content():
     assert tuple(c.text for c in rt.content) == ("a", "b")
 
 
+def test_user_message_with_image_content():
+    """Vision inputs piggyback on UserMessage.content as TextContent | ImageContent tuples."""
+    msg = UserMessage(
+        content=(
+            TextContent(text="describe"),
+            ImageContent(media_type="image/png", data="iVBORw0KGgo="),
+        ),
+        timestamp=99,
+    )
+    rt = _roundtrip(msg)
+    assert isinstance(rt, UserMessage)
+    assert isinstance(rt.content, tuple) and len(rt.content) == 2
+    assert isinstance(rt.content[0], TextContent) and rt.content[0].text == "describe"
+    assert isinstance(rt.content[1], ImageContent)
+    assert rt.content[1].media_type == "image/png"
+    assert rt.content[1].data == "iVBORw0KGgo="
+
+
 def test_assistant_message_with_thinking_text_and_tool_use():
     msg = AssistantMessage(
         content=(
@@ -114,3 +132,30 @@ def test_session_jsonl_resume(isolated_sessions_dir):
     assert resumed.messages[0].content == "hi"
     assert isinstance(resumed.messages[1], AssistantMessage)
     assert resumed.messages[1].content[0].text == "reply"
+
+
+def test_session_resume_reattaches_assistant_usage(isolated_sessions_dir):
+    """Outer-entry 'usage' must be re-stitched onto AssistantMessage.usage on resume."""
+    from agent_forge.messages import TokenUsage
+    from agent_forge.session import new_id
+    sid = new_id()
+    append_metadata(sid, "claude-sonnet-4-6", str(isolated_sessions_dir))
+    asst = AssistantMessage(
+        content=(TextContent(text="answer"),),
+        stop_reason="end_turn",
+        usage=TokenUsage(input=42, output=7, cache_read=3, cache_write=1, cost=0.001234),
+        model_id="claude-sonnet-4-6",
+        timestamp=10,
+    )
+    append_message(sid, asst, usage=asst.usage)
+
+    resumed = resume_session(sid)
+    assert len(resumed.messages) == 1
+    rt = resumed.messages[0]
+    assert isinstance(rt, AssistantMessage)
+    assert rt.usage is not None
+    assert rt.usage.input == 42
+    assert rt.usage.output == 7
+    assert rt.usage.cache_read == 3
+    assert rt.usage.cache_write == 1
+    assert rt.usage.cost == pytest.approx(0.001234)
