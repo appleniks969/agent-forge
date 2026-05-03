@@ -16,16 +16,41 @@ import asyncio
 import glob
 import os
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from . import _subprocess
 from .messages import ToolDefinition, ToolResult
 
 # ── Tool protocol ─────────────────────────────────────────────────────────────
 
 class Tool(Protocol):
+    """Structural type every built-in and custom tool must satisfy.
+
+    A tool is a pure I/O executor: it takes a dict of arguments, performs an
+    action against the filesystem or shell, and returns a ``ToolResult``.
+    Tools never raise — failures are returned as ``ToolResult(is_error=True)``.
+
+    Required attributes:
+        name:        unique identifier; must match the function-call name the
+                     LLM emits.
+        description: one-line natural-language description shown to the LLM in
+                     the tool catalog.
+        parameters:  JSON-Schema dict describing accepted arguments.
+
+    Required method:
+        execute(args, *, cwd, signal=None) -> ToolResult
+            Asynchronously perform the tool's action. ``cwd`` is the sandboxed
+            working directory; tools must not access paths outside it. The
+            optional ``signal`` is an ``asyncio.Event`` set when the user aborts.
+
+    Provided default:
+        definition() builds the ``ToolDefinition`` advertised to the LLM from
+        ``name``/``description``/``parameters``. Override only if you need to
+        customise the schema.
+    """
+
     @property
     def name(self) -> str: ...
     @property
@@ -35,24 +60,39 @@ class Tool(Protocol):
     async def execute(self, args: dict, *, cwd: str, signal: asyncio.Event | None = None) -> ToolResult: ...
 
     def definition(self) -> ToolDefinition:
+        """Return the ``ToolDefinition`` advertised to the LLM. Default = name + description + parameters."""
         return ToolDefinition(name=self.name, description=self.description, parameters=self.parameters)
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 class ToolRegistry:
+    """Mutable registry mapping tool names to ``Tool`` instances.
+
+    Composition roots (``chat.py``, ``autonomous.py``) build a registry via
+    ``default_registry()`` and pass it to ``make_config(...)``. The agent loop
+    looks up tools by name when the LLM emits a tool call.
+
+    Names must be unique; ``register()`` overwrites any prior tool with the
+    same name. Order is insertion order (Python ``dict`` semantics).
+    """
+
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
+        """Add (or replace) a tool. Idempotent for the same name."""
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool | None:
+        """Return the tool registered under ``name``, or ``None`` if absent."""
         return self._tools.get(name)
 
     def definitions(self) -> list[ToolDefinition]:
+        """Return every registered tool's ``ToolDefinition`` (the LLM-facing schema)."""
         return [t.definition() for t in self._tools.values()]
 
     def names(self) -> list[str]:
+        """Return all registered tool names in insertion order."""
         return list(self._tools.keys())
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -61,6 +101,13 @@ _MAX_OUTPUT = 50 * 1024  # 50 KB hard cap on any tool result
 _TRUNCATION_NOTICE = "\n\n[Output truncated — use offset/limit parameters to read more]"
 
 def _cap(text: str) -> str:
+    """Cap ``text`` at 50 KB (UTF-8), appending a truncation notice when needed.
+
+    All tools call this on their result before returning. The loop may further
+    truncate at append-time (see ``loop._truncate_tool_result``); both layers
+    exist so a buggy tool can't blow the context even if loop truncation is
+    raised via ``AgentConfig.tool_max_bytes``.
+    """
     if len(text.encode()) <= _MAX_OUTPUT:
         return text
     # Truncate to byte limit preserving valid UTF-8
@@ -80,6 +127,15 @@ def _sandbox(path: str, cwd: str) -> str:
 # ── BashTool ──────────────────────────────────────────────────────────────────
 
 class BashTool:
+    """Execute a shell command in ``cwd`` with a wall-clock timeout.
+
+    Uses ``_subprocess.run`` so the call is async, abort-aware (responds to
+    the agent's ``signal`` event), and merges stderr into stdout for one
+    captured stream. Output is capped at 50 KB.
+
+    Returns ``ToolResult(is_error=True)`` on non-zero exit, timeout, or abort.
+    """
+
     name = "Bash"
     description = (
         "Execute a shell command in the working directory. "
@@ -104,28 +160,36 @@ class BashTool:
         if not command:
             return ToolResult(content="Error: no command provided", is_error=True)
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=cwd,
+            done = await _subprocess.run(
+                command, shell=True, cwd=cwd, timeout=timeout,
+                signal=signal, merge_stderr=True,
             )
-            try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            except asyncio.TimeoutError:
-                proc.kill()
-                return ToolResult(content=f"Command timed out after {timeout}s", is_error=True)
-            output = stdout.decode("utf-8", errors="replace")
-            is_err = (proc.returncode or 0) != 0
-            if is_err and not output:
-                output = f"Exit code {proc.returncode}"
-            return ToolResult(content=_cap(output), is_error=is_err)
+        except asyncio.TimeoutError:
+            return ToolResult(content=f"Command timed out after {timeout}s", is_error=True)
         except Exception as exc:
             return ToolResult(content=str(exc), is_error=True)
+        if done.aborted:
+            return ToolResult(content="Command aborted", is_error=True)
+        output = done.stdout
+        is_err = done.returncode != 0
+        if is_err and not output:
+            output = f"Exit code {done.returncode}"
+        return ToolResult(content=_cap(output), is_error=is_err)
 
 # ── ReadTool ──────────────────────────────────────────────────────────────────
 
 class ReadTool:
+    """Read a UTF-8 text file with line numbers, optionally a window.
+
+    Args:
+        path:   file path relative to cwd (sandbox-enforced).
+        offset: 1-indexed start line (default 1).
+        limit:  max lines to return (default 2000).
+
+    Output format: ``"<lineno>\\t<line>"`` per line, plus a trailing
+    ``[N more lines — use offset=… to continue]`` hint when truncated.
+    """
+
     name = "Read"
     description = (
         "Read a file's contents with line numbers. "
@@ -171,6 +235,13 @@ class ReadTool:
 # ── WriteTool ─────────────────────────────────────────────────────────────────
 
 class WriteTool:
+    """Create or overwrite a file with literal ``content``.
+
+    Creates parent directories as needed. For incremental edits to an existing
+    file, prefer ``EditTool`` — it preserves unaffected text and validates
+    that the target string actually exists.
+    """
+
     name = "Write"
     description = (
         "Write content to a file (creates or overwrites). "
@@ -207,10 +278,12 @@ class WriteTool:
 # ── EditTool helpers (Fix 2: fuzzy matching) ────────────────────────────────
 
 def _fuzzy_find(text: str, old: str) -> "tuple[str, str] | None":
-    """
-    Try progressively looser matches for old_string.
-    Returns (matched_old, matched_text) where matched_old is guaranteed to be
-    present in matched_text, or None if no fuzzy match found.
+    """Try progressively looser matches for ``old`` inside ``text``.
+
+    Returns ``(matched_old, matched_text)`` where ``matched_old`` is guaranteed
+    to be present in ``matched_text``, or ``None`` if no fuzzy match is found.
+    Both elements are returned because subsequent edits in a multi-edit batch
+    must lookup against the same normalised text.
 
     Strategies (in order):
       1. CRLF -> LF normalisation (Windows line endings in file or old_string)
@@ -234,6 +307,26 @@ def _fuzzy_find(text: str, old: str) -> "tuple[str, str] | None":
 # ── EditTool (Fix 1: multi-edit batching, Fix 2: fuzzy matching) ──────────────
 
 class EditTool:
+    """Apply one or more ``old_string`` → ``new_string`` replacements atomically.
+
+    Two modes:
+        single-edit: pass ``old_string`` / ``new_string`` (+ optional ``replace_all``).
+        multi-edit: pass ``edits``, an array of {old_string, new_string, replace_all} objects.
+
+    Semantics (two-phase commit):
+        Phase 1 — every ``old_string`` is validated against the **original**
+          file content (not the running result). Fuzzy matching auto-handles
+          CRLF and trailing-whitespace differences.
+        Phase 1.5 — overlap detection: edits whose ``old_strings`` are
+          identical (without both being ``replace_all``) or where one contains
+          the other are rejected. This prevents silent mis-replacement.
+        Phase 2 — replacements are applied sequentially to a working copy and
+          the file is rewritten in one ``open("w")`` call.
+
+    Returns ``is_error=True`` on missing path, empty old_string, fuzzy-match
+    failure, ambiguous (multi-occurrence without ``replace_all``), or overlap.
+    """
+
     name = "Edit"
     description = (
         "Make one or more targeted edits to an existing file. "
@@ -322,6 +415,29 @@ class EditTool:
                     )
                 pre_validated.append((old, new, replace_all))
 
+            # Phase 1.5 — overlap detection: an edit must not target text that
+            # is contained within (or contains) the target of another edit.
+            # Without this, sequential application silently produces wrong
+            # results because the second edit's old_string was consumed/altered
+            # by the first.  We forbid the case rather than silently mis-replace.
+            for i in range(len(pre_validated)):
+                old_i, _, _ = pre_validated[i]
+                for j in range(i + 1, len(pre_validated)):
+                    old_j, _, _ = pre_validated[j]
+                    if old_i == old_j:
+                        # Same target string is fine when both have replace_all=True
+                        # (they're idempotent); otherwise it's ambiguous.
+                        if not (pre_validated[i][2] and pre_validated[j][2]):
+                            return ToolResult(
+                                content=f"Edits {i+1} and {j+1} target identical old_string — combine them or use replace_all",
+                                is_error=True,
+                            )
+                    elif old_i in old_j or old_j in old_i:
+                        return ToolResult(
+                            content=f"Edits {i+1} and {j+1} have overlapping old_strings (one contains the other); split into separate calls",
+                            is_error=True,
+                        )
+
             # Phase 2 — apply sequentially to a working copy of the (possibly
             #   normalised) original.  old_strings reference pre-edit text only.
             working = check_text
@@ -345,6 +461,19 @@ class EditTool:
 # ── GrepTool ──────────────────────────────────────────────────────────────────
 
 class GrepTool:
+    """Search file contents by regex. Uses ``rg`` if available, else pure-Python re.
+
+    Args:
+        pattern:          regex (Python re-flavoured). Required.
+        path:             search root, defaults to ``"."``.
+        glob:             optional file-glob filter (e.g. ``"**/*.py"``).
+        case_insensitive: case-insensitive match.
+        context:          lines of context around each match.
+
+    Output: one match per line, ``"<rel-path>:<lineno>: <line>"``. Capped at
+    50 KB; capped at 200 files in the Python fallback to bound work.
+    """
+
     name = "Grep"
     description = (
         "Search file contents using a regex pattern. "
@@ -385,7 +514,9 @@ class GrepTool:
             if file_glob:
                 cmd += ["--glob", file_glob]
             cmd += [pattern, os.path.join(cwd, path)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = await _subprocess.run(cmd, timeout=30, signal=signal)
+            if result.aborted:
+                return ToolResult(content="Search aborted", is_error=True)
             if result.returncode not in (0, 1):  # 1 = no matches (not an error)
                 raise OSError("rg failed")
             return ToolResult(content=_cap(result.stdout) if result.stdout else "(no matches)")
@@ -425,6 +556,15 @@ class GrepTool:
 # ── FindTool ──────────────────────────────────────────────────────────────────
 
 class FindTool:
+    """List files matching ``pattern`` under ``path``, newest-mtime first.
+
+    Args:
+        pattern: glob (e.g. ``"**/*.py"``, ``"src/*.ts"``). Required.
+        path:    root directory to search, defaults to ``"."``.
+
+    Returns up to 500 matches; appends ``"... and N more"`` when truncated.
+    """
+
     name = "Find"
     description = (
         "Find files matching a glob pattern. "
@@ -466,6 +606,12 @@ class FindTool:
 # ── Default registry ──────────────────────────────────────────────────────────
 
 def default_registry() -> ToolRegistry:
+    """Return a ``ToolRegistry`` populated with the 6 built-in tools.
+
+    Order: ``Bash`` · ``Read`` · ``Write`` · ``Edit`` · ``Grep`` · ``Find``.
+    Composition roots typically call this and then ``register()`` any custom
+    tools on top.
+    """
     reg = ToolRegistry()
     for tool in [BashTool(), ReadTool(), WriteTool(), EditTool(), GrepTool(), FindTool()]:
         reg.register(tool)

@@ -1,6 +1,21 @@
 # Agent Instructions — agent_forge
 
-A minimal Python coding agent: 13 flat modules, async-generator loop, interactive REPL (`agent-forge`) and autonomous git-isolated pipeline (`AutonomousFlow`).
+> **Who this file is for.** `AGENTS.md` is the architectural reference for
+> contributors and AI coding assistants (Claude Code, Cursor, etc.) **modifying
+> this codebase**. It complements — does not replace — `README.md`.
+>
+> | Question | File |
+> |---|---|
+> | "How do I install / run / configure agent-forge?" | **README.md** |
+> | "If I change X, what else breaks?" | **AGENTS.md** (this file) |
+> | "Where is symbol Y defined?" | **AGENTS.md** → Concept Index |
+> | "What conventions does the code follow?" | **AGENTS.md** → Python Conventions |
+> | "What invariants must I preserve?" | **AGENTS.md** → Policies |
+>
+> The two files have ~no content overlap by design. CLI flags, slash commands,
+> installation, and model catalog live in README only.
+
+A minimal Python coding agent: 17 flat modules, async-generator loop, interactive REPL (`agent-forge`) and autonomous git-isolated pipeline (`AutonomousFlow`).
 
 ---
 
@@ -13,16 +28,20 @@ messages.py            ← leaf: shared value types (Messages, TokenUsage, ToolR
 models.py              ← leaf: Model catalog + ModelCost
 provider.py            ← messages · models  (LLMProvider Protocol + StreamEvent union)
 anthropic_provider.py  ← messages · models · provider  (only file that imports the SDK)
-tools.py               ← messages
+events.py              ← messages  (16 AgentEvent dataclasses + ToolCallRecord + AgentEvent union)
+hooks.py               ← messages  (Hooks Protocol + NoopHooks + HookDecision)
+_subprocess.py         ← leaf: asyncio subprocess wrapper (signal/abort-aware)
+tools.py               ← messages · _subprocess
 context.py             ← messages · models
 system_prompt.py       ← messages
 session.py             ← messages
-loop.py                ← messages · models · provider · tools · context
+loop.py                ← messages · models · provider · tools · events · hooks
 prompts.py             ← messages · context · system_prompt · session · tools
-renderer.py            ← messages · loop
 runner.py              ← messages · loop  (drive() — the single drain seam)
+runtime.py             ← messages · models · provider · context · system_prompt · tools · loop · runner
+renderer.py            ← messages · loop
 chat.py                ← all modules (composition root — REPL)
-autonomous.py          ← messages · models · loop · prompts · renderer · runner · tools
+autonomous.py          ← messages · models · loop · prompts · renderer · runner · runtime · tools · _subprocess
                                           (composition root — autonomous pipeline)
 ```
 
@@ -30,18 +49,22 @@ autonomous.py          ← messages · models · loop · prompts · renderer · 
 |---|---|---|
 | `messages.py` | `UserMessage` / `AssistantMessage` / `ToolResultMessage`, content blocks, `TokenUsage` / `ZERO_USAGE`, `ToolResult`, `ToolDefinition`, `SystemPromptSection` | Any internal import |
 | `models.py` | `Model`, `ModelCost`, `MODELS` dict, `DEFAULT_MODEL` | Any internal import |
-| `provider.py` | `LLMProvider` Protocol, 7 `StreamEvent` dataclasses (block-lifecycle) | The Anthropic SDK; concrete adapter logic |
+| `provider.py` | `LLMProvider` Protocol, 7 `StreamEvent` dataclasses (block-lifecycle) | The Anthropic SDK; concrete adapter logic; `AnthropicProvider` re-export |
 | `anthropic_provider.py` | `AnthropicProvider`, OAuth/API-key dispatch, system-as-user injection, JSON repair, `_to_api_messages()` | Anything outside the Anthropic wire format |
-| `tools.py` | `Tool` Protocol, `ToolRegistry`, 6 built-in tools (Bash/Read/Write/Edit/Grep/Find), `_sandbox()`, `_cap()` | LLM calls, session state, context logic |
-| `context.py` | `ContextWindow` aggregate, `PressureTier`, P4 eviction, token estimation, `CompactionPort` | File I/O, LLM calls, session persistence, system-prompt assembly |
+| `events.py` | 16 `*AgentEvent` dataclasses + `AgentEvent` union + `ToolCallRecord` | Loop algorithm, hooks, provider plumbing |
+| `hooks.py` | `Hooks` Protocol, `NoopHooks`, `HookDecision`, `_hook_*` helpers | Loop algorithm, concrete hook subclasses |
+| `_subprocess.py` | `run()` async subprocess wrapper that races against an abort `asyncio.Event` and times out | Tool-specific logic; never raises for normal exits |
+| `tools.py` | `Tool` Protocol, `ToolRegistry`, 6 built-in tools (Bash/Read/Write/Edit/Grep/Find), `_sandbox()`, `_cap()` | LLM calls, session state, context logic, sync subprocess |
+| `context.py` | `ContextWindow` aggregate, `PressureTier`, P4 eviction, token estimation, `CompactionPort`, `ContextBudget` (with `p4_max_bytes` / `tool_max_bytes`) | File I/O, LLM calls, session persistence, system-prompt assembly |
 | `system_prompt.py` | `SystemPrompt` aggregate, `SectionName` (StrEnum w/ `.order` + `.cache_group`), cache-placement policy | File I/O, repo-map building, AGENTS.md loading |
-| `session.py` | JSONL append log, session resume, memory.md read/write | LLM calls, context window logic, tool execution |
-| `loop.py` | `agent_loop()` async generator, all `AgentEvent` types, `AgentConfig` / `AgentResult`, cwd injection, retry policy, `Hooks` Protocol + `NoopHooks` | Session persistence, UI/ANSI, memory I/O |
+| `session.py` | JSONL append log, session resume, memory.md read/write, `index.json` cwd→session lookup | LLM calls, context window logic, tool execution |
+| `loop.py` | `agent_loop()` async generator, `AgentConfig` / `AgentResult`, retry policy, tool-result truncation | Session persistence, UI/ANSI, memory I/O, `_CwdPatchedRegistry` (gone — `AgentConfig.cwd` is passed directly to `tool.execute`) |
 | `prompts.py` | `build_chat_prompt()`, `build_autonomous_prompt()`, public composables (`tools_section`, `discover_skills`, `load_agents_doc`, `build_repo_map`, `environment_section`) | ANSI output, event handling, agent loop |
+| `runner.py` | `drive()` — drain `agent_loop` into an `AgentResult`, single seam | Session persistence, KeyboardInterrupt handling |
+| `runtime.py` | `AgentRuntime` — pairs a `ContextWindow` with `make_config()` + `runner.drive()`. One `run_turn()` per user message, runs `manage_pressure()` automatically | Session JSONL persistence, REPL input, worktree lifecycle |
 | `renderer.py` | ANSI helpers, `render_event()`, markdown printer, `print_footer()`, Rich console | Business logic, file I/O, agent-loop control |
-| `runner.py` | `drive()` — drain `agent_loop` into an `AgentResult`, single seam used by both composition roots | Session persistence, KeyboardInterrupt handling |
-| `chat.py` | Interactive REPL, paste handling, slash commands, `main` CLI entry | Anthropic wire format, tool implementations, direct `agent_loop` iteration (use `drive()`) |
-| `autonomous.py` | `AutonomousFlow` state machine, git worktree lifecycle, `BashGuardHook`, delivery | Session JSONL persistence, REPL input, direct `agent_loop` iteration |
+| `chat.py` | Interactive REPL, paste handling, slash commands (`/quit /clear /status /model /remember`), `main` CLI entry | Anthropic wire format, tool implementations, direct `agent_loop` iteration (use `AgentRuntime.run_turn()`) |
+| `autonomous.py` | `AutonomousFlow` state machine, git worktree lifecycle, `BashGuardHook`, `PathGuardHook`, `_CompositeHook`, delivery | Session JSONL persistence, REPL input, direct `agent_loop` iteration |
 
 ---
 
@@ -55,9 +78,10 @@ Jump directly to the symbol — grep it in the file rather than scanning.
 |---|---|
 | all message types | `messages.py` → `UserMessage`, `AssistantMessage`, `ToolResultMessage`, `Message` union |
 | content block types | `messages.py` → `TextContent`, `ThinkingContent`, `ToolCallContent`, `ImageContent`, `ContentBlock` union |
+| vision input on user message | `messages.py` → `UserMessage.content: str \| tuple[TextContent \| ImageContent, ...]` |
 | token usage | `messages.py` → `TokenUsage`, `ZERO_USAGE` |
 | tool plumbing | `messages.py` → `ToolResult`, `ToolDefinition` |
-| system prompt section type | `messages.py` → `SystemPromptSection` |
+| system prompt section type | `messages.py` → `SystemPromptSection` (with `.hint_cache` advisory alias) |
 
 ### Models
 
@@ -79,6 +103,12 @@ Jump directly to the symbol — grep it in the file rather than scanning.
 | adaptive thinking model gate | `anthropic_provider.py` → `_supports_adaptive_thinking()` |
 | system-as-user injection (OAuth) | `anthropic_provider.py` → `_system_already_injected()` |
 
+### Async subprocess utility
+
+| Concept | File → Symbol |
+|---|---|
+| signal-aware subprocess runner | `_subprocess.py` → `run()` (returns `(returncode, stdout, stderr, aborted)`) |
+
 ### Tools
 
 | Concept | File → Symbol |
@@ -88,16 +118,17 @@ Jump directly to the symbol — grep it in the file rather than scanning.
 | path sandboxing | `tools.py` → `_sandbox()` |
 | tool output cap (50 KB) | `tools.py` → `_MAX_OUTPUT`, `_cap()` |
 | 6 tool implementations | `tools.py` → `BashTool` · `ReadTool` · `WriteTool` · `EditTool` · `GrepTool` · `FindTool` |
+| edit overlap detection | `tools.py` → `EditTool.execute()` (Phase 1.5 in the two-phase commit) |
 
 ### Context window
 
 | Concept | File → Symbol |
 |---|---|
 | context window aggregate | `context.py` → `ContextWindow` |
-| context budget config | `context.py` → `ContextBudget`, `default_budget()` |
+| context budget config | `context.py` → `ContextBudget` (`p4_max_bytes` / `tool_max_bytes` configurable), `default_budget()` |
 | context pressure tiers | `context.py` → `PressureTier`, `assess_pressure()` |
 | pressure absolute thresholds | `context.py` → `ABSOLUTE_P4`, `ABSOLUTE_P3`, `ABSOLUTE_AGG` |
-| P4 eviction (truncate old tool results) | `context.py` → `evict_p4()`, `_P4_MAX_BYTES`, `_P4_NOTICE` |
+| P4 eviction (truncate old tool results) | `context.py` → `evict_p4()`, `_P4_NOTICE` |
 | token estimation | `context.py` → `estimate_tokens()`, `estimate_tokens_list()` |
 | action log eviction | `context.py` → `ContextWindow.receive()`, `ActionLogEntry`, `StratifiedWindowStrategy.summarise_turn()` |
 | build LLM message array | `context.py` → `ContextWindow.build_messages()`, `StratifiedWindowStrategy.build()` |
@@ -123,31 +154,38 @@ Jump directly to the symbol — grep it in the file rather than scanning.
 |---|---|
 | session JSONL write | `session.py` → `append_message()`, `append_metadata()`, `append_compaction()` |
 | session directory path | `session.py` → `sessions_dir()` |
-| session resume / deserialise | `session.py` → `resume_session()`, `_dict_to_msg()` |
-| latest session for cwd | `session.py` → `latest_session_id()` |
+| session resume / deserialise | `session.py` → `resume_session()`, `_dict_to_msg()` (re-stitches outer-entry usage onto `AssistantMessage.usage`) |
+| latest session for cwd (O(1) index) | `session.py` → `latest_session_id()`, `_read_index()` / `_write_index()` (`~/.agent-forge/sessions/index.json`) |
 | memory load (merged global+project) | `session.py` → `load_memory()`, `load_memory_deduped()` |
 | memory update / dedup / cap | `session.py` → `update_memory()`, `_MEMORY_CAP_TOKENS`, `_DEDUP_PREFIX` |
 
-### Agent loop & hooks
+### Agent events & hooks
+
+| Concept | File → Symbol |
+|---|---|
+| 16 agent event dataclasses | `events.py` → `AgentEvent` union (turn / thinking / text / tool / error / abort / compaction / done) |
+| tool-call record (action log entry) | `events.py` → `ToolCallRecord` |
+| hooks protocol | `hooks.py` → `Hooks` (Protocol), `NoopHooks`, `HookDecision` |
+| hook call helpers | `hooks.py` → `_hook_before_llm()`, `_hook_before_tool()`, `_hook_after_tool()` |
+
+### Agent loop
 
 | Concept | File → Symbol |
 |---|---|
 | agent loop entry point | `loop.py` → `agent_loop()` |
 | agent convenience drain | `loop.py` → `run_agent()` |
-| agent config factory | `loop.py` → `make_config()` |
-| agent config / result | `loop.py` → `AgentConfig`, `AgentResult` |
-| all agent event types | `loop.py` → `AgentEvent` union + ~14 frozen dataclasses above it |
+| agent config factory | `loop.py` → `make_config()` (lazily imports `AnthropicProvider`; takes `cwd=`) |
+| agent config / result | `loop.py` → `AgentConfig` (carries `cwd` + `tool_max_bytes`), `AgentResult` |
 | retry count / delay / jitter | `loop.py` → `_MAX_RETRIES`, `_BASE_DELAY`, `_MAX_DELAY`, `_retry_delay()` |
-| tool result size cap (50 KB) | `loop.py` → `_MAX_TOOL_BYTES`, `_truncate_tool_result()` |
-| cwd injection into tools | `loop.py` → `_CwdPatchedRegistry`, `_CwdBoundTool`, `make_config()` |
-| hooks protocol | `loop.py` → `Hooks` (Protocol), `NoopHooks`, `HookDecision` |
-| hook call sites | `loop.py` → `_hook_before_llm()`, `_hook_before_tool()`, `_hook_after_tool()` |
+| tool result size cap (configurable) | `loop.py` → `_MAX_TOOL_BYTES`, `_truncate_tool_result()` (override via `AgentConfig.tool_max_bytes`) |
+| cwd injection into tools | `loop.py` → `AgentConfig.cwd` passed straight to `tool.execute(args, cwd=…)` (no proxy registry) |
 
-### Runner seam
+### Runner & runtime seams
 
 | Concept | File → Symbol |
 |---|---|
 | drain agent_loop → AgentResult | `runner.py` → `drive()` |
+| per-session glue (ctx + cfg factory + drive) | `runtime.py` → `AgentRuntime` (`run_turn()`, `clear()`, `init_messages()`) |
 
 ### Prompts (composition)
 
@@ -175,11 +213,11 @@ Jump directly to the symbol — grep it in the file rather than scanning.
 
 | Concept | File → Symbol |
 |---|---|
-| interactive REPL | `chat.py` → `run_chat()` |
+| interactive REPL | `chat.py` → `run_chat()` (uses `AgentRuntime.run_turn()`) |
 | CLI entry point | `chat.py` → `main()` |
 | paste collapse / expand | `chat.py` → `_make_paste_bindings()`, `_expand_pastes()` |
 | single-prompt (non-interactive) | `chat.py` → `_run_single_prompt()` |
-| end-of-session learning extraction | `chat.py` → `_extract_learnings()`, `_save_learnings()` |
+| explicit memory save | `chat.py` → `/remember <text>` slash command (heuristic learning extractor was deleted in Phase 6) |
 
 ### Autonomous
 
@@ -187,8 +225,11 @@ Jump directly to the symbol — grep it in the file rather than scanning.
 |---|---|
 | autonomous state machine | `autonomous.py` → `AutonomousFlow`, `FlowState` |
 | destructive-bash guard hook | `autonomous.py` → `BashGuardHook` (subclass of `NoopHooks`) |
+| sensitive-path guard hook | `autonomous.py` → `PathGuardHook` (subclass of `NoopHooks`) |
+| compose multiple hooks | `autonomous.py` → `_CompositeHook` |
 | gate checks (clean tree, not detached) | `autonomous.py` → `AutonomousFlow._gate_checks()` |
 | git worktree create / cleanup | `autonomous.py` → `_create_worktree()`, `_cleanup_worktree()` |
+| phase-runtime factory | `autonomous.py` → `AutonomousFlow._phase_runtime()` (one `AgentRuntime` per phase) |
 | plan / execute / verify phases | `autonomous.py` → `_plan()`, `_execute()`, `_verify_agent()` |
 | verify commands runner | `autonomous.py` → `AutonomousFlow._verify()` |
 | delivery (pr / merge / output / none) | `autonomous.py` → `AutonomousFlow._deliver()` |
@@ -203,27 +244,31 @@ When you change a type or interface, also update these downstream files.
 | Changed | Also update |
 |---|---|
 | `messages.py` → any `Message` type | `context.py` · `session.py` · `loop.py` · `anthropic_provider.py` · `renderer.py` · `chat.py` · `autonomous.py` |
+| `messages.py` → `UserMessage.content` (vision) | `session.py` (`_msg_to_dict` / `_dict_to_msg`) · `anthropic_provider.py` (`_to_api_messages`) · `context.py` (`estimate_tokens`) · `tests/test_session_roundtrip.py` |
 | `messages.py` → `SystemPromptSection` | `system_prompt.py` (`SystemPrompt.build()` returns it) · `loop.py` (`AgentConfig` carries it) · `anthropic_provider.py` (consumes it in `stream()`) · `prompts.py` |
-| `messages.py` → `TokenUsage` fields | `loop.py` (`AgentResult`) · `session.py` (`append_message`) · `renderer.py` (`print_footer`) · `chat.py` · `anthropic_provider.py` (`_extract_usage`) |
+| `messages.py` → `TokenUsage` fields | `loop.py` (`AgentResult`) · `session.py` (`append_message` + `resume_session` re-stitch) · `renderer.py` (`print_footer`) · `chat.py` · `anthropic_provider.py` (`_extract_usage`) |
 | `messages.py` → `ToolDefinition` | `tools.py` (`Tool.definition()`) · `loop.py` (tool_defs in `_stream_one_turn`) · `provider.py` (`LLMProvider.stream` signature) |
 | `messages.py` → `ToolResult` | `tools.py` (every tool's `__call__` return) · `loop.py` (`_truncate_tool_result`) · `autonomous.py` (`BashGuardHook` synthesises one) |
-| `models.py` → `Model` | `context.py` (`assess_pressure`, `default_budget`) · `loop.py` (`AgentConfig`) · `anthropic_provider.py` (`stream` signature) · `chat.py` · `autonomous.py` |
+| `models.py` → `Model` | `context.py` (`assess_pressure`, `default_budget`) · `loop.py` (`AgentConfig`) · `anthropic_provider.py` (`stream` signature) · `chat.py` · `autonomous.py` · `runtime.py` |
 | `models.py` → `MODELS` | `chat.py` (/model slash command display) |
-| `provider.py` → `LLMProvider` Protocol | `anthropic_provider.py` (must satisfy it) · `loop.py` (`_stream_one_turn` consumes it) · tests/`fake_provider.py` |
+| `provider.py` → `LLMProvider` Protocol | `anthropic_provider.py` (must satisfy it) · `loop.py` (`_stream_one_turn` consumes it) · `runtime.py` (carries it) · `tests/fake_provider.py` |
 | `provider.py` → any `StreamEvent` type | `anthropic_provider.py` (yields them) · `loop.py` (`_stream_one_turn` switch) |
-| `context.py` → `ContextWindow` interface | `chat.py` (`ctx.receive()`, `ctx.manage_pressure()`, `ctx.build_messages()`) · `autonomous.py` (not used directly today) |
-| `context.py` → `PressureTier` / thresholds | — (internal to ContextWindow.manage_pressure) |
-| `system_prompt.py` → `SystemPrompt` / `SectionName` | `prompts.py` (`build_chat_prompt`, `build_autonomous_prompt`) · `chat.py` (passes through) · `autonomous.py` (passes through) |
+| `events.py` → any `*AgentEvent` | `renderer.py` (`render_event` handles every branch) · `chat.py` · `autonomous.py` · `tests/fake_provider.py` |
+| `hooks.py` → `Hooks` Protocol | `NoopHooks` (same file) · `BashGuardHook` / `PathGuardHook` / `_CompositeHook` (`autonomous.py`) · any new hook subclass · `tests/test_hooks.py` |
+| `_subprocess.py` → `run()` signature | `tools.py` (`BashTool`, `GrepTool` rg fallback) · `autonomous.py` (gate / worktree / verify / deliver) |
+| `context.py` → `ContextWindow` interface | `runtime.py` (sole user inside the package) · `chat.py` / `autonomous.py` only via `runtime.context.*` getters |
+| `context.py` → `ContextBudget` fields | `default_budget()` (same file) · `evict_p4()` consumers if a new threshold is added |
+| `system_prompt.py` → `SystemPrompt` / `SectionName` | `prompts.py` (`build_chat_prompt`, `build_autonomous_prompt`) · `runtime.py` (carries it) · `chat.py` / `autonomous.py` (pass through to runtime) |
 | `session.py` → JSONL entry format | `append_message()` + `_msg_to_dict()` (write side) · `resume_session()` + `_dict_to_msg()` (read side) — both sides must stay in sync · `tests/test_session_roundtrip.py` |
-| `loop.py` → any `AgentEvent` type | `renderer.py` (`render_event` handles every branch) · `chat.py` · `autonomous.py` · `tests/fake_provider.py` (if it constructs them) |
-| `loop.py` → `AgentConfig` fields | `make_config()` (same file) · `chat.py` (caller) · `autonomous.py` (caller) |
-| `loop.py` → `AgentResult` fields | `chat.py` (result handling, session persistence) · `autonomous.py` (`_execute` returns it) · `runner.py` (transparent — just returns it) |
-| `loop.py` → `Hooks` Protocol | `NoopHooks` (same file) · `BashGuardHook` (`autonomous.py`) · any new hook subclass · `tests/test_hooks.py` |
-| `runner.py` → `drive()` signature | `chat.py` (two call sites: `run_chat`, `_run_single_prompt`) · `autonomous.py` (three call sites: `_plan`, `_execute`, `_verify_agent`) · `tests/test_runner.py` |
-| `tools.py` → `Tool` protocol | All 6 tool classes in same file · `loop.py` (`_CwdBoundTool` proxy) |
-| `tools.py` → `ToolRegistry` interface | `loop.py` (`_CwdPatchedRegistry`) · `chat.py` · `autonomous.py` · `prompts.py` (`tools_section`) |
+| `session.py` → `index.json` schema | `_read_index()` / `_write_index()` / `latest_session_id()` (rebuild path) · `tests/test_phase6.py` |
+| `loop.py` → `AgentConfig` fields | `make_config()` (same file) · `runtime.py` (`AgentRuntime.make_cfg()`) · tests using `make_config(...)` directly |
+| `loop.py` → `AgentResult` fields | `chat.py` (result handling, session persistence) · `autonomous.py` (`_execute` returns it) · `runner.py` / `runtime.py` (transparent) |
+| `runner.py` → `drive()` signature | `runtime.py` (`AgentRuntime.run_turn()`) · `tests/test_runner.py` |
+| `runtime.py` → `AgentRuntime` API | `chat.py` (REPL: `run_turn`, `clear`, `init_messages`, `context`) · `autonomous.py` (`_phase_runtime` + `run_turn` calls) |
+| `tools.py` → `Tool` protocol | All 6 tool classes in same file · `loop.py` calls `tool.execute(args, cwd=…, signal=…)` directly |
+| `tools.py` → `ToolRegistry` interface | `loop.py` (`config.tool_registry.get / definitions`) · `runtime.py` · `chat.py` · `autonomous.py` · `prompts.py` (`tools_section`) |
 | `prompts.py` → `build_chat_prompt` signature | `chat.py` (sole caller) |
-| `prompts.py` → `build_autonomous_prompt` signature | `autonomous.py` (`_plan`, `_execute`, `_verify_agent`) |
+| `prompts.py` → `build_autonomous_prompt` signature | `autonomous.py` (`_phase_runtime`) |
 | Add a new `SectionName` | `system_prompt.py` (enum variant + update `.order` + `.cache_group`) · `prompts.py` (`register()` call in the relevant builder) |
 | Add a new tool | `tools.py` (`default_registry()`) · `prompts.py` (`tools_section` description) |
 | Add a new provider adapter | New file `<vendor>_provider.py` satisfying `LLMProvider` · register/select in `chat.py` · `make_config(provider=…)` for tests |
@@ -234,14 +279,16 @@ When you change a type or interface, also update these downstream files.
 
 | Task | Steps |
 |---|---|
-| Add a new tool | Implement class in `tools.py` following `BashTool` pattern · add to `default_registry()` · add one-line description to `tools_section()` in `prompts.py` |
+| Add a new tool | Implement class in `tools.py` following `BashTool` pattern (use `_subprocess.run` for shell-out; never `subprocess.run`) · add to `default_registry()` · add one-line description to `tools_section()` in `prompts.py` |
 | Add a new model | Add entry to `MODELS` dict in `models.py` · update `DEFAULT_MODEL` if needed |
 | Add a new system-prompt section | Add `SectionName` variant in `system_prompt.py` (set `.order` + `.cache_group` properties) · call `sp.register(SectionName.X, …)` in `prompts.py:build_chat_prompt()` and/or `build_autonomous_prompt()` |
-| Add a new AgentEvent | Add frozen dataclass in `loop.py` · add to `AgentEvent` union · handle the new `isinstance` branch in `renderer.py:render_event()` |
+| Add a new AgentEvent | Add frozen dataclass in `events.py` · add to `AgentEvent` union · handle the new `isinstance` branch in `renderer.py:render_event()` |
 | Change compaction logic | Implement a `CompactionPort` subclass · inject via `ContextWindow(compaction_port=…)` · `ContextWindow.manage_pressure()` will call it at P3/AGG |
-| Add a Hook (e.g. policy / guard) | Subclass `NoopHooks` in any composition root · override `before_llm` / `before_tool_call` / `after_tool_call` · pass via `make_config(hooks=…)` |
-| Add a new provider | Implement a class satisfying the `LLMProvider` Protocol in a sibling file · keep all SDK imports inside it · pass via `make_config(provider=…)` (no global state) |
+| Add a Hook (e.g. policy / guard) | Subclass `NoopHooks` in any composition root · override `before_llm` / `before_tool_call` / `after_tool_call` · pass via `make_config(hooks=…)` (or `_CompositeHook(...)` to chain) |
+| Add a new provider | Implement a class satisfying the `LLMProvider` Protocol in a sibling file · keep all SDK imports inside it · pass via `make_config(provider=…)` (no global state) · or pass via `AgentRuntime(provider=…)` |
 | Inject a non-cached prompt section from a plugin | Call `sp.register_extra("name", lambda: text)` — appended after named sections, never cached |
+| Tighten the tool-result truncation cap | Pass `tool_max_bytes` via `make_config(...)` or set `AgentConfig.tool_max_bytes` directly (default 50 KB) |
+| Tighten the P4 eviction threshold | Construct a custom `ContextBudget(p4_max_bytes=…)` and pass to `ContextWindow(budget=…)` |
 
 ---
 
@@ -251,6 +298,7 @@ When you change a type or interface, also update these downstream files.
 - `from __future__ import annotations` at the top of every file
 - All public value objects: `@dataclass(frozen=True)`
 - All tools: never raise — always return `ToolResult(is_error=True)` on failure
+- All shell-outs go through `_subprocess.run()` — never `subprocess.run` (blocks the event loop, ignores aborts)
 - Async all the way: tool execution, provider streaming, agent loop, REPL are all `async`
 - Section headers in files: `# ── SectionName ──────────────────────────────────────────────`
 - Module docstring in every file: purpose + dependency position (why it exists relative to its neighbours)
@@ -265,7 +313,7 @@ Run these after every change.
 # Install / reinstall the package in editable mode (uv)
 uv pip install -e .
 
-# Run the test suite (66 tests as of refactor/architecture-pass)
+# Run the test suite (~197 tests as of phases 3-7)
 uv run pytest -q
 
 # Check imports
@@ -277,24 +325,19 @@ agent-forge --help
 
 ---
 
-## CLI Flags
+## CLI Flags & Slash Commands
 
-```
-agent-forge                         Interactive REPL
-  --model <id>                      Model ID (default: claude-sonnet-4-6)
-  --thinking off|adaptive|low|medium|high   Thinking budget (default: adaptive)
-  --cwd <path>                      Working directory (default: $PWD)
-  --continue                        Resume last session for this cwd
-  --resume <id>                     Resume specific session (partial ID ok)
-  --verbose                         Log context pressure tier, memory saves
-  --prompt <text>                   Run single prompt non-interactively then exit
+User-facing reference lives in **README.md** (§ CLI Reference, § Slash Commands).
+This file does not duplicate it — see README to keep one source of truth.
 
-Slash commands (inside REPL):
-  /quit  /exit  /q                  Exit and save learnings to memory
-  /clear                            Clear conversation + context window
-  /status                           Show session ID, token count, turn count
-  /model                            Switch model interactively
-```
+Internal contract for contributors:
+
+- `argparse` choices for `--thinking` are defined in `chat.py:_parse_args()`.
+  When you add a new level, also update README's CLI Reference and the
+  Thinking Mode table.
+- Slash commands are dispatched in `chat.py:run_chat()`. New slash commands
+  must (a) appear in the README's Slash Commands table and (b) update
+  `_status_text()` if they affect session state.
 
 Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig(...))` — no CLI flag yet.
 
@@ -307,25 +350,31 @@ Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig
 | Turn completeness: partial assistant messages never appended on error/abort | `loop.py` → `_stream_one_turn()` — only appends `assistant_msg` on `DoneEvent` |
 | Abort completeness: remaining unexecuted tool calls get placeholder error results before `AbortedAgentEvent` | `loop.py` → tool execution loop, `tool_calls[i + 1:]` fill |
 | Max-turns exits via `DoneAgentEvent(result.aborted=True)` — single exit path for callers | `loop.py` → end of `agent_loop()` while loop |
-| Composition roots use `runner.drive()` to drain `agent_loop` — never iterate it directly | `chat.py` · `autonomous.py` (5 call sites total) |
-| Tool result truncation at 50 KB (loop-time, before context append) | `loop.py` → `_truncate_tool_result()`, `_MAX_TOOL_BYTES` |
+| Composition roots use `AgentRuntime.run_turn()` to drive a turn — never iterate `agent_loop` directly (only `runner.drive()` does) | `chat.py` (REPL + `_run_single_prompt`) · `autonomous.py` (`_plan` / `_execute` / `_verify_agent`) |
+| Tool result truncation default 50 KB (loop-time, before context append; configurable per `AgentConfig.tool_max_bytes`) | `loop.py` → `_truncate_tool_result()`, `_MAX_TOOL_BYTES` |
 | Tool output cap at 50 KB (tool-time, before returning) | `tools.py` → `_cap()`, `_MAX_OUTPUT` |
 | Path sandboxing (cwd enforcement, reject `../` escapes) | `tools.py` → `_sandbox()` |
+| Edit overlap detection (identical or nested old_strings rejected) | `tools.py` → `EditTool.execute()` (Phase 1.5 of two-phase commit) |
+| All shell-outs are async + signal-aware (kill on abort, kill on timeout) | `_subprocess.py` → `run()` |
 | Retry: exponential backoff + jitter, max 3 attempts, max 30 s — owned by loop, NOT provider | `loop.py` → `_retry_delay()`, `_MAX_RETRIES`, `_MAX_DELAY` |
-| Hooks default to `NoopHooks` — composition roots opt in by passing `make_config(hooks=…)` | `loop.py` → `AgentConfig.hooks` default · `autonomous.py` → `BashGuardHook` |
-| Context pressure eviction (P4 inplace, P3/AGG compact) | `context.py` → `ContextWindow.manage_pressure()` · `assess_pressure()` · `evict_p4()` |
+| Hooks default to `NoopHooks` — composition roots opt in by passing `make_config(hooks=…)` or `AgentRuntime(hooks=…)` | `loop.py` → `AgentConfig.hooks` default · `autonomous.py` → `_CompositeHook(BashGuardHook(), PathGuardHook())` |
+| Context pressure eviction (P4 inplace, P3/AGG compact) — runs after every turn via `AgentRuntime.run_turn()` | `runtime.py` → `run_turn()` calls `ctx.manage_pressure()` · `context.py` → `ContextWindow.manage_pressure()` |
 | ActionLog: evicted turns become one-liner summaries, never discarded | `context.py` → `ContextWindow.receive()` · `StratifiedWindowStrategy.summarise_turn()` |
 | CompactionPort is optional — P3/AGG fall back to P4 if absent | `context.py` → `ContextWindow.manage_pressure()` |
-| Cache placement: `cache_control=True` on last non-null section of each group | `system_prompt.py` → `SystemPrompt.build()` |
+| Cache placement: `cache_control=True` on last non-null section of each group (advisory hint; providers may ignore) | `system_prompt.py` → `SystemPrompt.build()` · `messages.py` → `SystemPromptSection.hint_cache` alias |
 | Volatile sections (ENVIRONMENT, CUSTOM, plugin extras) never cached | `system_prompt.py` → `SectionName.is_volatile`, group 3 + `register_extra` |
 | AGENTS.md → CLAUDE.md fallback, 32 KB cap, truncation notice | `prompts.py` → `load_agents_doc()` |
 | Memory deduplication (60-char prefix match) | `session.py` → `load_memory_deduped()`, `_DEDUP_PREFIX` |
 | Memory size cap (~2 K tokens) | `session.py` → `update_memory()`, `_MEMORY_CAP_TOKENS` |
+| Session resume re-stitches outer-entry usage onto `AssistantMessage.usage` | `session.py` → `resume_session()` |
+| `latest_session_id()` is O(1) via `~/.agent-forge/sessions/index.json`, with O(n) scan fallback | `session.py` → `_read_index()`, `_write_index()`, `latest_session_id()` |
 | Gate checks before worktree creation (clean tree, named branch) | `autonomous.py` → `AutonomousFlow._gate_checks()` |
 | Worktree cleanup on success, failure, or crash | `autonomous.py` → `AutonomousFlow.run()` try/finally |
 | Delivery only if all verify commands pass | `autonomous.py` → `FlowState` machine: VERIFYING before DELIVERING |
 | Destructive Bash blocked in autonomous mode | `autonomous.py` → `BashGuardHook.before_tool_call()` |
+| Sensitive-path writes blocked in autonomous mode | `autonomous.py` → `PathGuardHook.before_tool_call()` |
 | OAuth vs API key: different client, beta headers, system-as-user injection | `anthropic_provider.py` → `_is_oauth()` · `AnthropicProvider.stream()` · `_system_already_injected()` |
+| `import agent_forge` works without the Anthropic SDK installed (best-effort import) | `__init__.py` → `try: from .anthropic_provider import AnthropicProvider` |
 
 ---
 
@@ -334,6 +383,11 @@ Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig
 | Document | When to read it |
 |---|---|
 | `pyproject.toml` | Dependency versions, entry-point wiring, dev-tool config |
+| `docs/adr/ADR-001-agent-runtime.md` | Why `AgentRuntime` exists (RC2: pressure management was REPL-only before) |
+| `docs/adr/ADR-002-provider-as-protocol.md` | Why `LLMProvider` is a Protocol and the SDK is an optional extra (RC1) |
+| `docs/adr/ADR-003-cache-control-is-a-hint.md` | Why `cache_control` is provider-advisory (RC5) |
+| `docs/CHANGELOG.md` | Per-phase change log (phases 0-7) |
 | `tests/fake_provider.py` | Reference implementation of `LLMProvider` for tests — copy this pattern when wiring a new provider |
 | `tests/test_runner.py` | Canonical examples of how to drive `agent_loop` from a test |
 | `tests/test_hooks.py` | Canonical examples of writing a custom `Hooks` subclass |
+| `tests/test_phase6.py` | Examples of `PathGuardHook`, `EditTool` overlap detection, session index tests |

@@ -118,7 +118,30 @@ def _supports_adaptive_thinking(model_id: str) -> bool:
 # ── AnthropicProvider ────────────────────────────────────────────────────────
 
 class AnthropicProvider:
-    """ACL: Anthropic Messages API → StreamEvent. Carries its own api_key."""
+    """Concrete ``LLMProvider`` adapting the Anthropic Messages API.
+
+    This is the only file in the package that imports the ``anthropic`` SDK;
+    the loop talks to it through the ``LLMProvider`` Protocol (see
+    ``provider.py``). The class encapsulates:
+
+    - **Credential resolution.** ``api_key`` may be passed explicitly or
+      discovered via ``CLAUDE_CODE_OAUTH_TOKEN`` / ``ANTHROPIC_API_KEY``
+      environment variables (in that order).
+    - **OAuth vs API-key dispatch.** OAuth tokens use a different client,
+      beta headers, and force system-as-user injection so that the user-facing
+      system prompt isn't blocked by Anthropic's first-party OAuth restriction
+      on ``system=``. See ``_is_oauth()`` and ``_system_already_injected()``.
+    - **Stream adaptation.** Translates Anthropic SSE deltas into the seven
+      ``StreamEvent`` types defined in ``provider.py``.
+    - **JSON repair.** Tool-call argument strings emitted as malformed JSON are
+      passed through ``_repair_json()`` before being delivered as
+      ``ToolCallEndEvent.arguments``.
+    - **Token usage.** ``DoneEvent.message.usage`` reflects the API's reported
+      input/output/cache counts; the loop syncs these into ``ContextWindow``.
+
+    The provider is stateless across ``stream()`` calls \u2014 a single instance
+    can be shared by the REPL and autonomous flow within one process.
+    """
 
     def __init__(
         self,
@@ -459,7 +482,16 @@ def _to_api_messages(
             if isinstance(msg.content, str):
                 result.append({"role": "user", "content": _sanitize_surrogates(msg.content)})  # Fix 8
             else:
-                result.append({"role": "user", "content": [{"type": "text", "text": _sanitize_surrogates(c.text)} for c in msg.content]})  # Fix 8
+                api_blocks: list[dict] = []
+                for blk in msg.content:
+                    if isinstance(blk, TextContent):
+                        api_blocks.append({"type": "text", "text": _sanitize_surrogates(blk.text)})  # Fix 8
+                    elif isinstance(blk, ImageContent):
+                        api_blocks.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": blk.media_type, "data": blk.data},
+                        })
+                result.append({"role": "user", "content": api_blocks})
 
         elif isinstance(msg, AssistantMessage):
             api_content: list[dict] = []

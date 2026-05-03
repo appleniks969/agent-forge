@@ -40,6 +40,7 @@ class SectionName(enum.StrEnum):
 
     @property
     def order(self) -> int:
+        """Stable rendering position of this section in the final prompt (0…8)."""
         return {
             "identity": 0, "tools": 1, "guidelines": 2,
             "agents_doc": 3, "skills": 4, "memory": 5,
@@ -48,6 +49,7 @@ class SectionName(enum.StrEnum):
 
     @property
     def cache_group(self) -> int:
+        """Anthropic cache group: 0 (stable), 1 (session-stable), 2 (repo_map), 3 (volatile, never cached)."""
         if self in (SectionName.IDENTITY, SectionName.TOOLS, SectionName.GUIDELINES): return 0
         if self in (SectionName.AGENTS_DOC, SectionName.SKILLS, SectionName.MEMORY): return 1
         if self == SectionName.REPO_MAP: return 2
@@ -55,17 +57,25 @@ class SectionName(enum.StrEnum):
 
     @property
     def is_volatile(self) -> bool:
+        """True for sections that change every turn (ENVIRONMENT, CUSTOM); never cached."""
         return self in (SectionName.ENVIRONMENT, SectionName.CUSTOM)
 
 
 @dataclass
 class _Section:
+    """Internal: lazy holder for one named section's resolved text.
+
+    Volatile sections re-call ``compute()`` on every ``resolve()``.
+    Non-volatile sections cache the first computation until ``invalidate()``.
+    """
+
     name: SectionName
     compute: Callable[[], str | None]
     _cached: str | None = field(default=None, init=False)
     _computed: bool = field(default=False, init=False)
 
     def resolve(self) -> str | None:
+        """Return current text. Re-computes if volatile; otherwise returns cached value."""
         if self.name.is_volatile:
             return self.compute()
         if not self._computed:
@@ -74,6 +84,7 @@ class _Section:
         return self._cached
 
     def invalidate(self) -> None:
+        """Force the next ``resolve()`` to re-call ``compute()``. Used by ``/clear``."""
         self._cached = None
         self._computed = False
 
@@ -91,6 +102,12 @@ class SystemPrompt:
         self._extra_sections: list[tuple[str, Callable[[], str | None]]] = []
 
     def register(self, name: SectionName, compute: Callable[[], str | None]) -> None:
+        """Bind a named section to a (possibly lazy) text producer.
+
+        ``compute`` is called when the prompt is built. Returning ``None`` or
+        empty/whitespace omits the section. Calling ``register`` again with the
+        same ``name`` replaces the previous producer.
+        """
         self._sections[name] = _Section(name=name, compute=compute)
 
     def register_extra(
@@ -112,31 +129,21 @@ class SystemPrompt:
         Resolve all sections in stable order.
         Places cache_control=True on the last non-null section of each group.
         Groups: 0 (stable), 1 (session-stable), 2 (repo_map), 3 (volatile — no cache).
+        Plugin extras (register_extra) appended last; always volatile.
         """
-        # Resolve all sections in order
+        # Resolve named sections in order
         resolved: list[tuple[SectionName, str]] = []
         for name in sorted(self._sections, key=lambda n: n.order):
             value = self._sections[name].resolve()
             if value and value.strip():
                 resolved.append((name, value))
 
-        if not resolved:
-            # Still process extras even when no named sections resolved
-            extras_only: list[SystemPromptSection] = []
-            for _ename, efn in self._extra_sections:
-                try:
-                    ev = efn()
-                except Exception:
-                    ev = None
-                if ev and ev.strip():
-                    extras_only.append(SystemPromptSection(text=ev, cache_control=False))
-            return extras_only
-
-        # Find last index per cache group (groups 0-2 get cache_control)
+        # Find last index per cache group (groups 0-2 get cache_control;
+        # group 3 is volatile and never cached)
         last_in_group: dict[int, int] = {}
         for i, (name, _) in enumerate(resolved):
             g = name.cache_group
-            if g < 3:  # don't cache volatile group
+            if g < 3:
                 last_in_group[g] = i
 
         result: list[SystemPromptSection] = []
@@ -144,7 +151,7 @@ class SystemPrompt:
             cache = (name.cache_group < 3 and last_in_group.get(name.cache_group) == i)
             result.append(SystemPromptSection(text=text, cache_control=cache))
 
-        # Append plugin extra sections — always volatile, never cached
+        # Plugin extras: appended last, always volatile (never cached)
         for _ename, efn in self._extra_sections:
             try:
                 ev = efn()
@@ -163,6 +170,7 @@ class SystemPrompt:
                 sec.invalidate()
 
     def invalidate_all(self) -> None:
+        """Invalidate every cached section. Forces full recompute on next ``build()``."""
         for sec in self._sections.values():
             sec.invalidate()
         # Extra sections use lambdas (called on every build), so nothing to invalidate

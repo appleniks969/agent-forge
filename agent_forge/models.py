@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelCost:
+    """Per-million-token pricing for one model. All fields are USD."""
     input: float          # $ per 1M tokens
     output: float
     cache_read: float
@@ -23,6 +24,13 @@ class ModelCost:
 
 @dataclass(frozen=True)
 class Model:
+    """A single model's static descriptor: id, capacity, capability, cost.
+
+    ``context_window`` is the maximum prompt + completion in tokens.
+    ``max_tokens`` is the per-response output cap.
+    ``reasoning`` indicates whether the model accepts a ``thinking`` parameter.
+    """
+
     id: str
     context_window: int
     max_tokens: int
@@ -31,6 +39,7 @@ class Model:
 
     @classmethod
     def from_id(cls, model_id: str) -> "Model":
+        """Return the ``Model`` whose ``id`` matches; raise ``ValueError`` if unknown."""
         if model_id not in MODELS:
             raise ValueError(f"Unknown model: {model_id!r}. Known: {list(MODELS)}")
         return MODELS[model_id]

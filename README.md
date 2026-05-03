@@ -134,7 +134,7 @@ Options:
   --model <id>          Model to use (default: claude-sonnet-4-6)
                         See --model values in the Models section below.
 
-  --thinking <level>    Thinking budget (default: adaptive)
+  --thinking <level>    Thinking budget (default: medium)
                         Choices: off | adaptive | low | medium | high
 
   --cwd <path>          Working directory for all tool calls (default: $PWD)
@@ -220,10 +220,10 @@ Claude's extended thinking lets the model reason through hard problems before an
 
 | Level | Behaviour | When to use |
 |---|---|---|
-| `adaptive` (default) | Model decides when to think and for how long | Best general setting |
+| `medium` (default) | Up to ~4 K thinking tokens | Standard debugging / refactoring — best quality/cost tradeoff in our eval matrix |
 | `off` | No thinking — fastest and cheapest | Simple tasks, CI pipelines |
 | `low` | Up to ~1 K thinking tokens | Light reasoning |
-| `medium` | Up to ~4 K thinking tokens | Standard debugging / refactoring |
+| `adaptive` | Model self-budgets (Sonnet 4.6 / Opus 4.6+) | Experimental — observed to under-allocate on hard tasks |
 | `high` | Up to ~16 K thinking tokens | Architecture, complex bug hunts |
 
 ```bash
@@ -278,7 +278,7 @@ result = asyncio.run(run_autonomous(AutonomousConfig(
     verify_commands=["pytest -x"],  # runs after the agent finishes; all must pass
     delivery="pr",                  # "pr" | "merge" | "output" | "none"
     max_turns=50,
-    thinking="off",
+    thinking="medium",  # default; use "off" for cheapest runs
 )))
 
 print(result.success)   # True / False
@@ -298,7 +298,7 @@ print(result.error)     # set if success=False
 | `verify_commands` | `list[str]` | `[]` | Shell commands that must all exit 0 before delivery |
 | `delivery` | `str` | `"pr"` | `"pr"` (push + open PR) · `"merge"` (merge to current branch) · `"output"` (return text only) · `"none"` (leave worktree in place) |
 | `max_turns` | `int` | `50` | Hard cap on agent turns |
-| `thinking` | `str` | `"off"` | Same levels as CLI |
+| `thinking` | `str` | `"medium"` | Same levels as CLI |
 | `verbose` | `bool` | `False` | Print tool call events |
 
 ### Flow states
@@ -362,22 +362,39 @@ Tool results are capped at 50 KB. For `Read`, use `offset` and `limit` to page t
 
 ## For Developers — Extending agent-forge
 
+### API reference (generated)
+
+For browsable per-symbol API docs, run:
+
+```bash
+bash scripts/build_api_docs.sh
+open docs/api/agent_forge.html        # macOS
+xdg-open docs/api/agent_forge.html    # linux
+```
+
+The generator (`pdoc`) renders every module, class, and function with its
+docstring. The `docs/api/` output is gitignored — rebuild after any
+docstring change.
+
 ### Project layout
 
+The package is organised as a strict layered set of ~19 flat modules in
+`agent_forge/`. The **full module dependency order, owned-vs-forbidden
+responsibilities, and per-symbol concept index** live in
+[`AGENTS.md`](AGENTS.md) — it is the canonical architectural reference for
+both contributors and AI coding assistants.
+
+Top-level files you'll see in the repo:
+
 ```
-agent_forge/
-  provider.py      ← message types, model catalog, Anthropic streaming adapter
-  tools.py         ← Tool protocol, ToolRegistry, 6 built-in tools
-  context.py       ← ContextWindow, pressure tiers, system prompt builder
-  session.py       ← JSONL session log, resume, memory.md read/write
-  loop.py          ← agent_loop() async generator, AgentConfig/AgentResult
-  prompts.py       ← system prompt sections, AGENTS.md loader, repo map
-  renderer.py      ← ANSI helpers, event renderer, turn footer
-  chat.py          ← interactive REPL, CLI entry point (composition root)
-  autonomous.py    ← AutonomousFlow state machine (composition root)
+agent_forge/       ← the package (see AGENTS.md for module breakdown)
+tests/             ← pytest suite (~197 tests)
+docs/              ← ADRs and CHANGELOG
+eval/              ← reproducible evaluation harness (see eval/README.md)
 pyproject.toml     ← package metadata, dependencies, entry point
 install.sh         ← one-step installer
-AGENTS.md          ← architecture guide for contributors and AI agents
+README.md          ← this file — install / use
+AGENTS.md          ← architecture / extend / modify
 ```
 
 ### Add a custom tool
