@@ -1,7 +1,7 @@
 [project]
 name = "agent-forge"
 version = "1.0.0"
-description = "Minimal coding agent — 7 flat modules"
+description = "Minimal coding agent — 19 flat modules, async-generator loop"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -37,6 +37,7 @@ build-backend = "hatchling.build"
 dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pdoc>=14.0",          # API doc generator (see scripts/build_api_docs.sh)
 ]
 
 [tool.pytest.ini_options]
