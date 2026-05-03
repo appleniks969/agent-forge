@@ -25,7 +25,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from .provider import (
+from .messages import (
     AssistantMessage, ImageContent, Message, TextContent, ThinkingContent,
     ToolCallContent, ToolResultMessage, TokenUsage, UserMessage, ZERO_USAGE,
 )
@@ -36,6 +36,33 @@ def sessions_dir() -> Path:
     d = Path.home() / ".agent-forge" / "sessions"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+def _index_path() -> Path:
+    return sessions_dir() / "index.json"
+
+def _read_index() -> dict[str, str]:
+    """Read {cwd: latest_session_id}. Returns {} on missing/corrupt index."""
+    p = _index_path()
+    if not p.exists():
+        return {}
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _write_index(idx: dict[str, str]) -> None:
+    """Atomic-ish write: tmp file + os.replace."""
+    p = _index_path()
+    tmp = p.with_suffix(".json.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(idx, f)
+        os.replace(tmp, p)
+    except Exception:
+        # Best-effort — index corruption falls back to O(n) scan in latest_session_id
+        pass
 
 def memory_path(scope: str, cwd: str) -> Path:
     if scope == "global":
@@ -64,6 +91,13 @@ def append_metadata(session_id: str, model_id: str, cwd: str) -> None:
         "type": "metadata", "id": new_id(),
         "ts": int(time.time() * 1000), "model": model_id, "cwd": cwd,
     })
+    # Update the cwd → session index for O(1) latest_session_id lookup.
+    try:
+        idx = _read_index()
+        idx[cwd] = session_id
+        _write_index(idx)
+    except Exception:
+        pass
 
 def append_message(session_id: str, msg: Message, usage: TokenUsage | None = None) -> str:
     msg_id = new_id()
@@ -109,13 +143,28 @@ def list_sessions() -> list[tuple[str, float]]:
     return result
 
 def latest_session_id(cwd: str) -> str | None:
-    """Find the most recent session that was started in cwd."""
+    """Find the most recent session that was started in cwd.
+
+    Fast path: read ~/.agent-forge/sessions/index.json (maintained by
+    append_metadata). Falls back to an O(n) scan if the index is missing,
+    corrupt, or stale (the indexed session no longer exists on disk).
+    """
+    idx = _read_index()
+    sid = idx.get(cwd)
+    if sid and _session_path(sid).exists():
+        return sid
+    # Slow fallback — also rebuild the index entry while we're at it.
     for sid, _ in list_sessions():
         try:
             with open(_session_path(sid), encoding="utf-8") as f:
                 first_line = f.readline()
             entry = json.loads(first_line)
             if entry.get("type") == "metadata" and entry.get("cwd") == cwd:
+                try:
+                    idx[cwd] = sid
+                    _write_index(idx)
+                except Exception:
+                    pass
                 return sid
         except Exception:
             continue
@@ -158,14 +207,27 @@ def resume_session(session_id: str) -> ResumedSession:
                 continue
         try:
             msg = _dict_to_msg(entry["message"])
-            messages.append(msg)
+            # Re-stitch outer-entry usage onto the AssistantMessage so the
+            # round-trip is information-preserving (cost/token accounting on
+            # resume matches what was originally written).
             if "usage" in entry:
                 u = entry["usage"]
-                last_usage = TokenUsage(
+                usage = TokenUsage(
                     input=u.get("input", 0), output=u.get("output", 0),
                     cache_read=u.get("cache_read", 0), cache_write=u.get("cache_write", 0),
                     cost=u.get("cost", 0.0),
                 )
+                last_usage = usage
+                if isinstance(msg, AssistantMessage) and msg.usage is None:
+                    # Frozen dataclass — reconstruct rather than mutate.
+                    msg = AssistantMessage(
+                        content=msg.content,
+                        stop_reason=msg.stop_reason,
+                        usage=usage,
+                        model_id=msg.model_id,
+                        timestamp=msg.timestamp,
+                    )
+            messages.append(msg)
         except Exception:
             continue
 
@@ -175,7 +237,15 @@ def resume_session(session_id: str) -> ResumedSession:
 
 def _msg_to_dict(msg: Message) -> dict:
     if isinstance(msg, UserMessage):
-        content = msg.content if isinstance(msg.content, str) else [{"type": "text", "text": c.text} for c in msg.content]
+        if isinstance(msg.content, str):
+            content: str | list = msg.content
+        else:
+            content = []
+            for blk in msg.content:
+                if isinstance(blk, TextContent):
+                    content.append({"type": "text", "text": blk.text})
+                elif isinstance(blk, ImageContent):
+                    content.append({"type": "image", "media_type": blk.media_type, "data": blk.data})
         return {"role": "user", "content": content, "ts": msg.timestamp}
     elif isinstance(msg, AssistantMessage):
         content = []
@@ -209,32 +279,47 @@ def _dict_to_msg(d: dict) -> Message:
     role = d.get("role", "")
     ts = d.get("ts", int(time.time() * 1000))
     if role == "user":
-        content = d["content"]
-        if isinstance(content, str):
-            return UserMessage(content=content, timestamp=ts)
-        blocks = tuple(TextContent(text=c["text"]) for c in content if c.get("type") == "text")
-        return UserMessage(content=blocks if blocks else "", timestamp=ts)
+        raw = d["content"]
+        if isinstance(raw, str):
+            return UserMessage(content=raw, timestamp=ts)
+        blocks: list[TextContent | ImageContent] = []
+        for c in raw:
+            t = c.get("type")
+            if t == "text":
+                blocks.append(TextContent(text=c["text"]))
+            elif t == "image":
+                blocks.append(ImageContent(media_type=c["media_type"], data=c["data"]))
+        return UserMessage(content=tuple(blocks) if blocks else "", timestamp=ts)
     elif role == "assistant":
-        blocks: list = []
+        a_blocks: list = []
         for blk in d.get("content", []):
             t = blk.get("type")
             if t == "text":
-                blocks.append(TextContent(text=blk["text"]))
+                a_blocks.append(TextContent(text=blk["text"]))
             elif t == "thinking":
-                blocks.append(ThinkingContent(thinking=blk["thinking"], signature=blk.get("signature")))
+                a_blocks.append(ThinkingContent(thinking=blk["thinking"], signature=blk.get("signature")))
             elif t == "tool_use":
-                blocks.append(ToolCallContent(id=blk["id"], name=blk["name"], arguments=blk.get("arguments", {})))
+                a_blocks.append(ToolCallContent(id=blk["id"], name=blk["name"], arguments=blk.get("arguments", {})))
+        # Inner-dict 'usage' (rare; some legacy entries write it here) takes
+        # priority because the outer-entry 'usage' is reconstructed by the
+        # caller via _entry_to_msg() which knows about the full JSONL line.
+        u = d.get("usage")
+        usage = TokenUsage(
+            input=u.get("input", 0), output=u.get("output", 0),
+            cache_read=u.get("cache_read", 0), cache_write=u.get("cache_write", 0),
+            cost=u.get("cost", 0.0),
+        ) if u else None
         return AssistantMessage(
-            content=tuple(blocks),
+            content=tuple(a_blocks),
             stop_reason=d.get("stop_reason", "end_turn"),
-            usage=None,   # usage stored separately in the outer JSONL entry
+            usage=usage,
             model_id=d.get("model_id"),
             timestamp=ts,
         )
     else:  # tool_result
         raw_content = d.get("content", "")
         if isinstance(raw_content, str):
-            content: str | tuple = raw_content
+            tr_content: str | tuple = raw_content
         else:
             parts: list[TextContent | ImageContent] = []
             for blk in raw_content:
@@ -242,9 +327,9 @@ def _dict_to_msg(d: dict) -> Message:
                     parts.append(TextContent(text=blk["text"]))
                 elif blk.get("type") == "image":
                     parts.append(ImageContent(media_type=blk["media_type"], data=blk["data"]))
-            content = tuple(parts) if parts else ""
+            tr_content = tuple(parts) if parts else ""
         return ToolResultMessage(
-            tool_call_id=d["tool_call_id"], content=content,
+            tool_call_id=d["tool_call_id"], content=tr_content,
             is_error=d.get("is_error", False), timestamp=ts,
         )
 

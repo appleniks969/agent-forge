@@ -1,0 +1,411 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 1600 820"
+     font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+
+  <!-- ══════════════════════════════════════════════════════════
+       Palette (matches reference image)
+       Surface lavender band : #dde0ee   header text #2c4262
+       Core blue band        : #c9d3e6   header text #2c4262
+       Safety mint band      : #cee5dd   header text #2c5d56
+       Backend gray band     : #d9dade   header text #444851
+       State cream band      : #efe6d2   header text #6e5a30
+       Box fill              : #ffffff
+       Box stroke navy       : #2c4262
+       Box stroke teal       : #2c5d56
+       Inner-gate dashed     : #d6a86a   (amber)
+       Gate fill light       : #fbf3df
+       Arrow gray            : #6f7d8e
+       Arrow strong          : #2c4262
+       Text dark             : #1c1d1f
+       Text mid              : #4a5568
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M1,1 L8,4.5 L1,8" fill="none" stroke="#6f7d8e" stroke-width="1.3"/>
+    </marker>
+    <marker id="arr-strong" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M1,1 L8,4.5 L1,8" fill="none" stroke="#2c4262" stroke-width="1.5"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="820" fill="#ffffff"/>
+
+  <!-- ── Title bar ───────────────────────────────────────── -->
+  <rect x="0" y="0" width="1600" height="44" fill="#2c4262"/>
+  <text x="800" y="22" text-anchor="middle" font-size="16" font-weight="700"
+        fill="#ffffff" letter-spacing="0.4">agent_forge — Functional Architecture</text>
+  <text x="800" y="38" text-anchor="middle" font-size="10" fill="#c8d6e4" letter-spacing="0.3">
+    Surface · Core · Safety/Action · Backend  |  with State at the foundation
+  </text>
+
+  <!-- ══════════════════════════════════════════════════════════
+       LAYER BANDS — top row (4 columns) and bottom strip
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- Surface band (lavender) -->
+  <rect x="14"  y="60"  width="436" height="510" rx="14" fill="#dde0ee"/>
+  <!-- Core band (blue) -->
+  <rect x="464" y="60"  width="266" height="510" rx="14" fill="#c9d3e6"/>
+  <!-- Safety/Action band (mint) -->
+  <rect x="744" y="60"  width="510" height="510" rx="14" fill="#cee5dd"/>
+  <!-- Backend band (gray) -->
+  <rect x="1268" y="60" width="318" height="510" rx="14" fill="#d9dade"/>
+  <!-- State band (cream, bottom) -->
+  <rect x="14"  y="586" width="1572" height="220" rx="14" fill="#efe6d2"/>
+
+  <!-- ── Layer headers ─────────────────────────────────── -->
+  <!-- Surface -->
+  <g transform="translate(40,90)">
+    <rect x="0" y="-14" width="22" height="18" rx="2" fill="none" stroke="#2c4262" stroke-width="1.6"/>
+    <line x1="2" y1="0" x2="20" y2="0" stroke="#2c4262" stroke-width="1.4"/>
+    <line x1="11" y1="4" x2="11" y2="10" stroke="#2c4262" stroke-width="1.4"/>
+    <line x1="6" y1="10" x2="16" y2="10" stroke="#2c4262" stroke-width="1.4"/>
+  </g>
+  <text x="74" y="92" font-size="18" font-weight="700" fill="#2c4262">Surface Layer</text>
+
+  <!-- Core -->
+  <g transform="translate(484,80)">
+    <rect x="0" y="0" width="20" height="20" rx="2" fill="none" stroke="#2c4262" stroke-width="1.6"/>
+    <rect x="5" y="5" width="10" height="10" fill="#2c4262"/>
+    <line x1="-3" y1="4" x2="0" y2="4" stroke="#2c4262" stroke-width="1.4"/>
+    <line x1="-3" y1="10" x2="0" y2="10" stroke="#2c4262" stroke-width="1.4"/>
+    <line x1="-3" y1="16" x2="0" y2="16" stroke="#2c4262" stroke-width="1.4"/>
+    <line x1="20" y1="4" x2="23" y2="4" stroke="#2c4262" stroke-width="1.4"/>
+    <line x1="20" y1="10" x2="23" y2="10" stroke="#2c4262" stroke-width="1.4"/>
+    <line x1="20" y1="16" x2="23" y2="16" stroke="#2c4262" stroke-width="1.4"/>
+  </g>
+  <text x="514" y="92" font-size="18" font-weight="700" fill="#2c4262">Core Layer</text>
+
+  <!-- Safety -->
+  <g transform="translate(770,79)">
+    <path d="M11,1 L21,5 L21,12 Q21,19 11,22 Q1,19 1,12 L1,5 Z"
+          fill="none" stroke="#2c5d56" stroke-width="1.6"/>
+  </g>
+  <text x="800" y="92" font-size="18" font-weight="700" fill="#2c5d56">Safety / Action Layer</text>
+
+  <!-- Backend -->
+  <g transform="translate(1290,79)">
+    <path d="M2,2 L2,20 L20,11 Z" fill="#444851"/>
+  </g>
+  <text x="1320" y="92" font-size="18" font-weight="700" fill="#444851">Backend Layer</text>
+
+  <!-- State -->
+  <g transform="translate(40,608)">
+    <rect x="0" y="0" width="22" height="20" rx="2" fill="none" stroke="#6e5a30" stroke-width="1.6"/>
+    <rect x="4" y="0" width="14" height="6" fill="#6e5a30"/>
+    <rect x="6" y="11" width="10" height="6" fill="none" stroke="#6e5a30" stroke-width="1.2"/>
+  </g>
+  <text x="74" y="624" font-size="18" font-weight="700" fill="#6e5a30">State Layer</text>
+
+  <!-- ══════════════════════════════════════════════════════════
+       SURFACE LAYER — entry points + renderer
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- Interactive REPL (chat.py) -->
+  <g>
+    <rect x="38" y="140" width="178" height="62" rx="8" fill="#ffffff" stroke="#2c4262" stroke-width="1.4"/>
+    <text x="127" y="166" text-anchor="middle" font-size="12" font-weight="700" fill="#1c1d1f">Interactive REPL</text>
+    <text x="127" y="184" text-anchor="middle" font-size="10" fill="#4a5568">chat.py · /slash · paste</text>
+    <text x="127" y="196" text-anchor="middle" font-size="10" fill="#4a5568">collapse</text>
+  </g>
+
+  <!-- Single-Prompt mode -->
+  <g>
+    <rect x="38" y="222" width="178" height="56" rx="8" fill="#ffffff" stroke="#2c4262" stroke-width="1.4"/>
+    <text x="127" y="246" text-anchor="middle" font-size="12" font-weight="700" fill="#1c1d1f">Single-Prompt Mode</text>
+    <text x="127" y="264" text-anchor="middle" font-size="10" fill="#4a5568">chat.py --prompt</text>
+  </g>
+
+  <!-- Autonomous Flow -->
+  <g>
+    <rect x="38" y="298" width="178" height="62" rx="8" fill="#ffffff" stroke="#2c4262" stroke-width="1.4"/>
+    <text x="127" y="324" text-anchor="middle" font-size="12" font-weight="700" fill="#1c1d1f">Autonomous Flow</text>
+    <text x="127" y="342" text-anchor="middle" font-size="10" fill="#4a5568">autonomous.py</text>
+    <text x="127" y="354" text-anchor="middle" font-size="10" fill="#4a5568">FlowState · gates</text>
+  </g>
+
+  <!-- UI / Render -->
+  <g>
+    <rect x="248" y="222" width="190" height="116" rx="10" fill="#ffffff" stroke="#2c4262" stroke-width="1.6"/>
+    <text x="343" y="250" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">UI / Render</text>
+    <text x="343" y="270" text-anchor="middle" font-size="10" fill="#4a5568">renderer.py</text>
+    <text x="343" y="288" text-anchor="middle" font-size="10" fill="#4a5568">render_event()</text>
+    <text x="343" y="302" text-anchor="middle" font-size="10" fill="#4a5568">ANSI · Rich console</text>
+    <text x="343" y="320" text-anchor="middle" font-size="10" fill="#4a5568">markdown · footer</text>
+  </g>
+
+  <!-- Surface internal arrows: REPL/Single-Prompt → UI/Render -->
+  <path d="M216,171 L232,171 L232,240 L248,240" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <path d="M216,250 L248,250" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+
+  <!-- ══════════════════════════════════════════════════════════
+       CORE LAYER
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- Agent Loop -->
+  <g>
+    <rect x="486" y="200" width="222" height="118" rx="10" fill="#ffffff" stroke="#2c4262" stroke-width="1.8"/>
+    <text x="597" y="228" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Agent Loop</text>
+    <text x="597" y="248" text-anchor="middle" font-size="10" fill="#4a5568">loop.py · agent_loop()</text>
+    <text x="597" y="264" text-anchor="middle" font-size="10" fill="#4a5568">12 AgentEvent types</text>
+    <text x="597" y="280" text-anchor="middle" font-size="10" fill="#4a5568">AgentConfig · AgentResult</text>
+    <text x="597" y="298" text-anchor="middle" font-size="10" fill="#4a5568">make_config() · run_agent()</text>
+    <text x="597" y="312" text-anchor="middle" font-size="10" fill="#4a5568">_CwdPatchedRegistry</text>
+  </g>
+
+  <!-- Compaction Pipeline -->
+  <g>
+    <rect x="486" y="400" width="222" height="100" rx="10" fill="#ffffff" stroke="#2c4262" stroke-width="1.6"/>
+    <text x="597" y="426" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Compaction Pipeline</text>
+    <text x="597" y="444" text-anchor="middle" font-size="10" fill="#4a5568">context.py · CompactionPort</text>
+    <text x="597" y="460" text-anchor="middle" font-size="10" fill="#4a5568">P1–P4 pressure tiers</text>
+    <text x="597" y="476" text-anchor="middle" font-size="10" fill="#4a5568">evict_p4()</text>
+    <text x="597" y="492" text-anchor="middle" font-size="10" fill="#4a5568">prompts.py · system prompt</text>
+  </g>
+
+  <!-- Core internal: loop ↔ compaction -->
+  <path d="M540,318 L540,400" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="450" y="362" font-size="9" fill="#4a5568" font-style="italic">pre-model shapers</text>
+
+  <path d="M650,400 L650,318" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="660" y="362" font-size="9" fill="#4a5568" font-style="italic">compacted context</text>
+
+  <!-- ══════════════════════════════════════════════════════════
+       SAFETY / ACTION LAYER
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- Inner dashed gate (Safety zone) -->
+  <rect x="762" y="170" width="476" height="156" rx="10"
+        fill="#fbf3df" stroke="#d6a86a" stroke-width="1.6" stroke-dasharray="6,4"/>
+
+  <!-- Path Sandbox -->
+  <g>
+    <rect x="780" y="190" width="216" height="118" rx="9" fill="#fff7e6" stroke="#c9914a" stroke-width="1.5"/>
+    <text x="888" y="216" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Path Sandbox</text>
+    <text x="888" y="236" text-anchor="middle" font-size="10" fill="#4a5568">tools.py</text>
+    <text x="888" y="252" text-anchor="middle" font-size="10" fill="#4a5568">cwd-bound paths</text>
+    <text x="888" y="268" text-anchor="middle" font-size="10" fill="#4a5568">50 KB read cap</text>
+    <text x="888" y="284" text-anchor="middle" font-size="10" fill="#4a5568">absolute-path guard</text>
+    <text x="888" y="300" text-anchor="middle" font-size="10" fill="#4a5568">Bash cwd injection</text>
+  </g>
+
+  <!-- Worktree Isolation -->
+  <g>
+    <rect x="1006" y="190" width="216" height="118" rx="9" fill="#fff7e6" stroke="#c9914a" stroke-width="1.5"/>
+    <text x="1114" y="216" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Worktree Isolation</text>
+    <text x="1114" y="236" text-anchor="middle" font-size="10" fill="#4a5568">autonomous.py</text>
+    <text x="1114" y="252" text-anchor="middle" font-size="10" fill="#4a5568">git worktree per run</text>
+    <text x="1114" y="268" text-anchor="middle" font-size="10" fill="#4a5568">isolated cwd</text>
+    <text x="1114" y="284" text-anchor="middle" font-size="10" fill="#4a5568">verify · deliver gates</text>
+    <text x="1114" y="300" text-anchor="middle" font-size="10" fill="#4a5568">PR / merge / output</text>
+  </g>
+
+  <!-- Built-in Tools (outside dashed gate) -->
+  <g>
+    <rect x="762" y="358" width="476" height="148" rx="10" fill="#ffffff" stroke="#2c5d56" stroke-width="1.6"/>
+    <text x="1000" y="384" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Built-in Tools</text>
+    <text x="1000" y="402" text-anchor="middle" font-size="10" fill="#4a5568">tools.py · Tool protocol · ToolRegistry · default_registry()</text>
+
+    <!-- Tool chips -->
+    <g font-size="10" fill="#1c1d1f" font-weight="600">
+      <rect x="788"  y="418" width="68" height="26" rx="4" fill="#e7f1ee" stroke="#2c5d56" stroke-width="1"/>
+      <text x="822"  y="436" text-anchor="middle">Bash</text>
+
+      <rect x="868"  y="418" width="68" height="26" rx="4" fill="#e7f1ee" stroke="#2c5d56" stroke-width="1"/>
+      <text x="902"  y="436" text-anchor="middle">Read</text>
+
+      <rect x="948"  y="418" width="68" height="26" rx="4" fill="#e7f1ee" stroke="#2c5d56" stroke-width="1"/>
+      <text x="982"  y="436" text-anchor="middle">Write</text>
+
+      <rect x="1028" y="418" width="68" height="26" rx="4" fill="#e7f1ee" stroke="#2c5d56" stroke-width="1"/>
+      <text x="1062" y="436" text-anchor="middle">Edit</text>
+
+      <rect x="1108" y="418" width="68" height="26" rx="4" fill="#e7f1ee" stroke="#2c5d56" stroke-width="1"/>
+      <text x="1142" y="436" text-anchor="middle">Grep</text>
+
+      <rect x="1188" y="418" width="46" height="26" rx="4" fill="#e7f1ee" stroke="#2c5d56" stroke-width="1"/>
+      <text x="1211" y="436" text-anchor="middle">Find</text>
+    </g>
+
+    <text x="1000" y="468" text-anchor="middle" font-size="10" fill="#4a5568" font-style="italic">
+      tool surface — 6 built-ins, no MCP / no plugins / no subagents
+    </text>
+    <text x="1000" y="484" text-anchor="middle" font-size="10" fill="#4a5568" font-style="italic">
+      ToolDefinition schema injected into provider request
+    </text>
+  </g>
+
+  <!-- Surface entry → Agent Loop arrows (UI/Render → Loop, Autonomous → Loop) -->
+  <path d="M438,240 L486,240" fill="none" stroke="#6f7d8e" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="442" y="234" font-size="9" fill="#4a5568" font-style="italic">submit / interrupt</text>
+
+  <path d="M486,300 L438,300" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="442" y="294" font-size="9" fill="#4a5568" font-style="italic">output / progress</text>
+
+  <!-- Autonomous → Agent Loop direct (orthogonal: down through gap, across, up) -->
+  <path d="M127,360 L127,575 L475,575 L475,260 L486,260" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="240" y="569" font-size="9" fill="#4a5568" font-style="italic">programmatic flow · run_agent()</text>
+
+  <!-- Agent Loop → Path Sandbox (tool request enters safety) -->
+  <path d="M708,220 L780,220" fill="none" stroke="#6f7d8e" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="714" y="214" font-size="9" fill="#4a5568" font-style="italic">tool request</text>
+
+  <!-- Path Sandbox / Worktree Isolation → Built-in Tools (Y/N pass-through) -->
+  <path d="M888,308 L888,358" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="894" y="334" font-size="9" fill="#4a5568" font-style="italic">Y / N</text>
+
+  <path d="M1114,308 L1114,358" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="1120" y="334" font-size="9" fill="#4a5568" font-style="italic">Y / N</text>
+
+  <!-- Built-in Tools → Agent Loop (tool result back, orthogonal) -->
+  <path d="M762,400 L740,400 L740,290 L708,290" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="746" y="350" font-size="9" fill="#4a5568" font-style="italic">tool result</text>
+
+  <!-- ══════════════════════════════════════════════════════════
+       BACKEND LAYER
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- Anthropic API -->
+  <g>
+    <rect x="1290" y="150" width="280" height="100" rx="10" fill="#ffffff" stroke="#444851" stroke-width="1.6"/>
+    <text x="1430" y="178" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Anthropic API</text>
+    <text x="1430" y="198" text-anchor="middle" font-size="10" fill="#4a5568">provider.py · AnthropicProvider</text>
+    <text x="1430" y="214" text-anchor="middle" font-size="10" fill="#4a5568">_do_stream() · OAuth / API key</text>
+    <text x="1430" y="230" text-anchor="middle" font-size="10" fill="#4a5568">MODELS · DEFAULT_MODEL</text>
+    <text x="1430" y="244" text-anchor="middle" font-size="10" fill="#4a5568">streaming text + thinking</text>
+  </g>
+
+  <!-- Shell sandbox / subprocess -->
+  <g>
+    <rect x="1290" y="280" width="280" height="84" rx="10" fill="#ffffff" stroke="#444851" stroke-width="1.6"/>
+    <text x="1430" y="306" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Shell Execution</text>
+    <text x="1430" y="324" text-anchor="middle" font-size="10" fill="#4a5568">Bash tool · subprocess.run</text>
+    <text x="1430" y="338" text-anchor="middle" font-size="10" fill="#4a5568">timeout · cwd-injection</text>
+    <text x="1430" y="352" text-anchor="middle" font-size="10" fill="#4a5568">stdout / stderr capture</text>
+  </g>
+
+  <!-- Local filesystem -->
+  <g>
+    <rect x="1290" y="394" width="280" height="84" rx="10" fill="#ffffff" stroke="#444851" stroke-width="1.6"/>
+    <text x="1430" y="420" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Local Filesystem</text>
+    <text x="1430" y="438" text-anchor="middle" font-size="10" fill="#4a5568">Read / Write / Edit / Grep / Find</text>
+    <text x="1430" y="452" text-anchor="middle" font-size="10" fill="#4a5568">cwd-rooted access only</text>
+    <text x="1430" y="466" text-anchor="middle" font-size="10" fill="#4a5568">git worktree (autonomous)</text>
+  </g>
+
+  <!-- Agent Loop → Anthropic API (orthogonal top route over Safety band) -->
+  <path d="M597,200 L597,124 L1430,124 L1430,150" fill="none" stroke="#2c4262" stroke-width="1.5" marker-end="url(#arr-strong)"/>
+  <text x="980" y="118" font-size="10" fill="#2c4262" font-style="italic" font-weight="600">messages.create · streaming</text>
+
+  <!-- Anthropic API → Agent Loop (orthogonal response: above the request line) -->
+  <path d="M1290,200 L1252,200 L1252,108 L620,108 L620,200" fill="none" stroke="#2c4262" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+  <text x="980" y="102" font-size="9" fill="#2c4262" font-style="italic">stream chunks</text>
+
+  <!-- Built-in Tools → Shell Execution (orthogonal: right then up) -->
+  <path d="M1238,400 L1262,400 L1262,322 L1290,322" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="1244" y="362" font-size="9" fill="#4a5568" font-style="italic">shell commands</text>
+
+  <!-- Built-in Tools → Local Filesystem (straight horizontal) -->
+  <path d="M1238,436 L1290,436" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="1244" y="430" font-size="9" fill="#4a5568" font-style="italic">file ops</text>
+
+  <!-- ══════════════════════════════════════════════════════════
+       STATE LAYER (cream strip)
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- Context Assembly -->
+  <g>
+    <rect x="40" y="650" width="288" height="130" rx="10" fill="#ffffff" stroke="#6e5a30" stroke-width="1.4"/>
+    <text x="184" y="678" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Context Assembly</text>
+    <text x="184" y="696" text-anchor="middle" font-size="10" fill="#4a5568">context.py · ContextWindow</text>
+    <text x="184" y="710" text-anchor="middle" font-size="10" fill="#4a5568">SystemPrompt · SectionName</text>
+    <text x="184" y="724" text-anchor="middle" font-size="10" fill="#4a5568">P1–P4 pressure tiers</text>
+    <text x="184" y="740" text-anchor="middle" font-size="10" fill="#4a5568">prompts.py · build_system_prompt()</text>
+    <text x="184" y="754" text-anchor="middle" font-size="10" fill="#4a5568">repo-map · stable tools section</text>
+    <text x="184" y="770" text-anchor="middle" font-size="10" fill="#4a5568">cache-friendly group-0</text>
+  </g>
+
+  <!-- Runtime State -->
+  <g>
+    <rect x="346" y="650" width="288" height="130" rx="10" fill="#ffffff" stroke="#6e5a30" stroke-width="1.4"/>
+    <text x="490" y="678" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Runtime State</text>
+    <text x="490" y="696" text-anchor="middle" font-size="10" fill="#4a5568">loop.py</text>
+    <text x="490" y="712" text-anchor="middle" font-size="10" fill="#4a5568">AgentConfig · AgentResult</text>
+    <text x="490" y="728" text-anchor="middle" font-size="10" fill="#4a5568">in-flight messages</text>
+    <text x="490" y="744" text-anchor="middle" font-size="10" fill="#4a5568">turn counter · token usage</text>
+    <text x="490" y="760" text-anchor="middle" font-size="10" fill="#4a5568">streaming buffer</text>
+  </g>
+
+  <!-- Session Persistence -->
+  <g>
+    <rect x="652" y="650" width="288" height="130" rx="10" fill="#ffffff" stroke="#6e5a30" stroke-width="1.4"/>
+    <text x="796" y="678" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Session Persistence</text>
+    <text x="796" y="696" text-anchor="middle" font-size="10" fill="#4a5568">session.py</text>
+    <text x="796" y="712" text-anchor="middle" font-size="10" fill="#4a5568">JSONL append log</text>
+    <text x="796" y="728" text-anchor="middle" font-size="10" fill="#4a5568">resume / fork</text>
+    <text x="796" y="744" text-anchor="middle" font-size="10" fill="#4a5568">~/.agent_forge/sessions/</text>
+    <text x="796" y="760" text-anchor="middle" font-size="10" fill="#4a5568">UUID per session</text>
+  </g>
+
+  <!-- AGENTS.md + memory -->
+  <g>
+    <rect x="958" y="650" width="288" height="130" rx="10" fill="#ffffff" stroke="#6e5a30" stroke-width="1.4"/>
+    <text x="1102" y="678" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">AGENTS.md + memory.md</text>
+    <text x="1102" y="696" text-anchor="middle" font-size="10" fill="#4a5568">prompts.py loader (32 KB cap)</text>
+    <text x="1102" y="712" text-anchor="middle" font-size="10" fill="#4a5568">AGENTS.md / CLAUDE.md</text>
+    <text x="1102" y="728" text-anchor="middle" font-size="10" fill="#4a5568">session.py · memory r/w</text>
+    <text x="1102" y="744" text-anchor="middle" font-size="10" fill="#4a5568">load_memory_deduped()</text>
+    <text x="1102" y="760" text-anchor="middle" font-size="10" fill="#4a5568">~2 K tokens · 60-char dedup</text>
+  </g>
+
+  <!-- Worktree State -->
+  <g>
+    <rect x="1264" y="650" width="288" height="130" rx="10" fill="#ffffff" stroke="#6e5a30" stroke-width="1.4"/>
+    <text x="1408" y="678" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">Worktree / Flow State</text>
+    <text x="1408" y="696" text-anchor="middle" font-size="10" fill="#4a5568">autonomous.py</text>
+    <text x="1408" y="712" text-anchor="middle" font-size="10" fill="#4a5568">FlowState transitions</text>
+    <text x="1408" y="728" text-anchor="middle" font-size="10" fill="#4a5568">git worktree path</text>
+    <text x="1408" y="744" text-anchor="middle" font-size="10" fill="#4a5568">_verify() · _deliver()</text>
+    <text x="1408" y="760" text-anchor="middle" font-size="10" fill="#4a5568">pr / merge / output / none</text>
+  </g>
+
+  <!-- ── State → upper-layer arrows (orthogonal) ───────── -->
+  <!-- Context Assembly → Compaction Pipeline (up, across, into left edge) -->
+  <path d="M184,650 L184,540 L460,540 L460,460 L486,460" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="190" y="534" font-size="9" fill="#4a5568" font-style="italic">system prompt</text>
+
+  <!-- Runtime State → Compaction (straight up — Runtime state IS the buffer being compacted) -->
+  <path d="M490,650 L490,500" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="496" y="610" font-size="9" fill="#4a5568" font-style="italic">mutate state</text>
+
+  <!-- Session Persistence → Agent Loop (up, around right of Compaction, into Agent Loop right) -->
+  <path d="M796,650 L796,560 L720,560 L720,310 L708,310" fill="none" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="726" y="554" font-size="9" fill="#4a5568" font-style="italic">transcript · resume / fork</text>
+
+  <!-- AGENTS.md → Context Assembly (route above boxes through band header strip, dashed) -->
+  <path d="M1102,650 L1102,620 L184,620 L184,650" fill="none" stroke="#6f7d8e" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+  <text x="600" y="615" font-size="9" fill="#4a5568" font-style="italic">memory load</text>
+
+  <!-- Worktree State → Autonomous Flow (up, across gap, up into autonomous bottom) -->
+  <path d="M1408,650 L1408,580 L127,580 L127,360" fill="none" stroke="#6f7d8e" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+  <text x="800" y="574" font-size="9" fill="#4a5568" font-style="italic">flow state</text>
+
+  <!-- ══════════════════════════════════════════════════════════
+       LEGEND
+  ═══════════════════════════════════════════════════════════════ -->
+  <g>
+    <rect x="14" y="46" width="1572" height="0" fill="none"/>
+  </g>
+  <g>
+    <rect x="1228" y="540" width="354" height="36" rx="6" fill="#ede6da" stroke="#c8b99a" stroke-width="1"/>
+    <text x="1240" y="558" font-size="10" font-weight="700" fill="#6b5a3e">Legend</text>
+    <line x1="1240" y1="568" x2="1278" y2="568" stroke="#6f7d8e" stroke-width="1.3" marker-end="url(#arr)"/>
+    <text x="1284" y="572" font-size="10" fill="#4a5568">runtime data flow</text>
+    <line x1="1410" y1="568" x2="1448" y2="568" stroke="#2c4262" stroke-width="1.5" marker-end="url(#arr-strong)"/>
+    <text x="1454" y="572" font-size="10" fill="#4a5568">model API stream</text>
+  </g>
+
+</svg>

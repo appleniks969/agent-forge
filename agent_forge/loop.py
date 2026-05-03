@@ -1,27 +1,22 @@
 """
-loop.py — agent_loop() async generator + AgentEvent/AgentConfig/AgentResult types.
+loop.py — agent_loop() async generator + AgentConfig/AgentResult types.
 
-Depends on provider, tools, and context. Orchestrates one full task: context
-builds the message array → loop calls the LLM via provider → tools execute tool
-calls → loop appends results back to the message list. Session persistence is
-deliberately excluded (that belongs to chat.py) so the loop stays a pure
-generator that can be tested without disk I/O.
+Depends on provider, tools, context, events, hooks. Orchestrates one full
+task: context builds the message array → loop calls the LLM via provider →
+tools execute tool calls → loop appends results back to the message list.
+Session persistence is deliberately excluded (that belongs to chat.py) so the
+loop stays a pure generator that can be tested without disk I/O.
 
-Owns: agent_loop() (the core async generator), all AgentEvent frozen dataclasses,
-      AgentConfig, AgentResult, make_config() (factory that injects cwd into the
-      tool registry), run_agent() (convenience drain), _CwdPatchedRegistry /
-      _CwdBoundTool, retry logic (_retry_delay), tool result truncation
-      (_truncate_tool_result).
+Owns: agent_loop() (the core async generator), AgentConfig, AgentResult,
+      make_config() (factory), run_agent() (convenience drain), retry logic
+      (_retry_delay), tool result truncation (_truncate_tool_result).
 
-AgentEvent types (16):
-  TurnStartEvent, TurnEndEvent
-  ThinkingStartAgentEvent, ThinkingDeltaAgentEvent, ThinkingEndAgentEvent
-  TextStartAgentEvent, TextDeltaAgentEvent, TextEndAgentEvent
-  ToolDeclaredAgentEvent   — LLM committed to a tool call (from stream, before exec)
-  ToolExecutingAgentEvent  — about to call tool.execute()
-  ToolResultAgentEvent     — tool returned
-  ToolBlockedAgentEvent    — hook blocked the call
-  ErrorAgentEvent, AbortedAgentEvent, CompactionAgentEvent, DoneAgentEvent
+AgentEvent dataclasses live in events.py and are re-exported here for
+back-compat. Hooks Protocol + NoopHooks live in hooks.py and are re-exported
+here.
+
+Cwd injection: AgentConfig.cwd is read by the loop and passed straight to
+tool.execute(args, cwd=…). No more registry-wrapping proxy.
 
 Policies enforced here:
   - Turn completeness: partial assistant messages are never appended on error/abort.
@@ -30,8 +25,10 @@ Policies enforced here:
   - Tool result truncation: results > 50 KB truncated before appending to context.
   - Retry: exponential backoff + jitter, up to 3 attempts per turn, max 30 s.
   - Max-turns exits via DoneAgentEvent(result.aborted=True) — single exit path for callers.
-  - api_key is encapsulated in AnthropicProvider; AgentConfig.provider carries it.
-    make_config() also accepts a pre-built provider= kwarg for testing.
+  - api_key is encapsulated by the concrete provider (e.g. AnthropicProvider);
+    AgentConfig.provider holds an LLMProvider Protocol — the loop never imports
+    a concrete adapter at module load. make_config() lazily constructs a default
+    AnthropicProvider only when no provider= is supplied (typical for tests).
 """
 from __future__ import annotations
 
@@ -43,13 +40,27 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
+from .events import (
+    AbortedAgentEvent, AgentEvent, CompactionAgentEvent, DoneAgentEvent,
+    ErrorAgentEvent, TextDeltaAgentEvent, TextEndAgentEvent,
+    TextStartAgentEvent, ThinkingDeltaAgentEvent, ThinkingEndAgentEvent,
+    ThinkingStartAgentEvent, ToolBlockedAgentEvent, ToolCallRecord,
+    ToolDeclaredAgentEvent, ToolExecutingAgentEvent, ToolResultAgentEvent,
+    TurnEndEvent, TurnStartEvent,
+)
+from .hooks import (
+    HookDecision, Hooks, NoopHooks,
+    _hook_after_tool, _hook_before_llm, _hook_before_tool,
+)
+from .messages import (
+    AssistantMessage, Message, SystemPromptSection, TextContent,
+    ToolCallContent, ToolDefinition, ToolResult, ToolResultMessage,
+    TokenUsage, UserMessage, ZERO_USAGE,
+)
+from .models import Model
 from .provider import (
-    AnthropicProvider,
-    AssistantMessage, ContentBlockEndEvent, ContentBlockStartEvent,
-    DoneEvent, Message, Model, StreamErrorEvent, SystemPromptSection,
-    TextContent, TextDeltaEvent, ThinkingContent, ThinkingDeltaEvent,
-    ToolCallContent, ToolCallEndEvent, ToolDefinition,
-    ToolResult, ToolResultMessage, TokenUsage, UserMessage, ZERO_USAGE,
+    ContentBlockEndEvent, ContentBlockStartEvent, DoneEvent, LLMProvider,
+    StreamErrorEvent, TextDeltaEvent, ThinkingDeltaEvent, ToolCallEndEvent,
 )
 from .tools import ToolRegistry
 
@@ -62,109 +73,6 @@ _MAX_DELAY = 30.0
 def _retry_delay(attempt: int) -> float:
     return min(_BASE_DELAY * (2 ** attempt) * random.uniform(0.75, 1.25), _MAX_DELAY)
 
-# ── Agent event types ─────────────────────────────────────────────────────────
-
-@dataclass(frozen=True)
-class TurnStartEvent:
-    turn: int
-    type: str = field(default="turn_start", init=False)
-
-@dataclass(frozen=True)
-class TurnEndEvent:
-    turn: int
-    duration_ms: float = 0.0
-    type: str = field(default="turn_end", init=False)
-
-@dataclass(frozen=True)
-class ThinkingStartAgentEvent:
-    index: int
-    type: str = field(default="thinking_start", init=False)
-
-@dataclass(frozen=True)
-class ThinkingDeltaAgentEvent:
-    delta: str
-    type: str = field(default="thinking_delta", init=False)
-
-@dataclass(frozen=True)
-class ThinkingEndAgentEvent:
-    index: int
-    type: str = field(default="thinking_end", init=False)
-
-@dataclass(frozen=True)
-class TextStartAgentEvent:
-    index: int
-    type: str = field(default="text_start", init=False)
-
-@dataclass(frozen=True)
-class TextDeltaAgentEvent:
-    delta: str
-    type: str = field(default="text_delta", init=False)
-
-@dataclass(frozen=True)
-class TextEndAgentEvent:
-    index: int
-    type: str = field(default="text_end", init=False)
-
-@dataclass(frozen=True)
-class ToolDeclaredAgentEvent:
-    """LLM has committed to this tool call (emitted during stream, before execution)."""
-    id: str
-    name: str
-    args: dict
-    type: str = field(default="tool_declared", init=False)
-
-@dataclass(frozen=True)
-class ToolExecutingAgentEvent:
-    """About to call tool.execute() — emitted immediately before the tool runs."""
-    id: str
-    name: str
-    args: dict
-    type: str = field(default="tool_executing", init=False)
-
-@dataclass(frozen=True)
-class ToolResultAgentEvent:
-    id: str
-    name: str
-    result: ToolResult
-    type: str = field(default="tool_result", init=False)
-
-@dataclass(frozen=True)
-class ToolBlockedAgentEvent:
-    id: str
-    name: str
-    reason: str
-    type: str = field(default="tool_blocked", init=False)
-
-@dataclass(frozen=True)
-class ErrorAgentEvent:
-    error: str
-    retryable: bool
-    type: str = field(default="error", init=False)
-
-@dataclass(frozen=True)
-class AbortedAgentEvent:
-    type: str = field(default="aborted", init=False)
-
-@dataclass(frozen=True)
-class CompactionAgentEvent:
-    tokens_before: int
-    tokens_after: int
-    type: str = field(default="compaction", init=False)
-
-@dataclass(frozen=True)
-class DoneAgentEvent:
-    result: "AgentResult"
-    type: str = field(default="done", init=False)
-
-AgentEvent = (
-    TurnStartEvent | TurnEndEvent |
-    ThinkingStartAgentEvent | ThinkingDeltaAgentEvent | ThinkingEndAgentEvent |
-    TextStartAgentEvent | TextDeltaAgentEvent | TextEndAgentEvent |
-    ToolDeclaredAgentEvent | ToolExecutingAgentEvent |
-    ToolResultAgentEvent | ToolBlockedAgentEvent |
-    ErrorAgentEvent | AbortedAgentEvent |
-    CompactionAgentEvent | DoneAgentEvent
-)
 
 # ── Internal: mutable turn result ─────────────────────────────────────────────
 #
@@ -193,16 +101,6 @@ class _TurnResult:
             return []
         return [b for b in self.assistant_msg.content if isinstance(b, ToolCallContent)]
 
-# ── ToolCallRecord (for action log) ──────────────────────────────────────────
-
-@dataclass(frozen=True)
-class ToolCallRecord:
-    id: str
-    name: str
-    args: dict
-    result: ToolResult
-    blocked: bool = False
-    block_reason: str | None = None
 
 # ── Config & Result ───────────────────────────────────────────────────────────
 
@@ -210,13 +108,18 @@ class ToolCallRecord:
 class AgentConfig:
     model: Model
     system_prompt: list[SystemPromptSection]
-    provider: AnthropicProvider          # carries api_key; replaces bare api_key field
+    provider: LLMProvider                # Protocol seam — concrete adapter lives elsewhere
     tool_registry: ToolRegistry
-    thinking: str = "off"
-    max_turns: int = 100  # Fix 4: raised from 50 to match coding-agent-flow
+    cwd: str = "."                       # passed to tool.execute on every call
+    thinking: str = "medium"
+    max_turns: int = 100
     max_tokens: int | None = None
     signal: asyncio.Event | None = None
-    hooks: Any | None = None
+    hooks: Hooks = field(default_factory=NoopHooks)
+    # Loop-time tool-result truncation cap. Independent of tools.py:_MAX_OUTPUT
+    # (that cap is enforced inside each tool); this one is the safety net for
+    # results that already escaped a tool with full size (e.g. a custom tool).
+    tool_max_bytes: int = 50 * 1024
 
 @dataclass(frozen=True)
 class AgentResult:
@@ -227,46 +130,16 @@ class AgentResult:
     turns: int
     aborted: bool
 
-# ── Hooks helpers ─────────────────────────────────────────────────────────────
-
-async def _hook_before_llm(hooks: Any, messages: list[Message], turn: int) -> list[Message]:
-    if hooks is None:
-        return messages
-    fn = getattr(hooks, "before_llm_call", None)
-    if fn is None:
-        return messages
-    result = await fn(messages, {"turn": turn})
-    return result if result is not None else messages
-
-async def _hook_before_tool(hooks: Any, call: ToolCallContent, turn: int) -> tuple[bool, str | None]:
-    if hooks is None:
-        return False, None
-    fn = getattr(hooks, "before_tool_call", None)
-    if fn is None:
-        return False, None
-    result = await fn({"id": call.id, "name": call.name, "args": call.arguments}, {"turn": turn})
-    if result is None:
-        return False, None
-    return result.get("block", False), result.get("reason")
-
-async def _hook_after_tool(hooks: Any, call: ToolCallContent, result: ToolResult, turn: int) -> ToolResult | None:
-    if hooks is None:
-        return None
-    fn = getattr(hooks, "after_tool_call", None)
-    if fn is None:
-        return None
-    replacement = await fn({"id": call.id, "name": call.name, "args": call.arguments}, result, {"turn": turn})
-    return replacement if isinstance(replacement, ToolResult) else None
 
 # ── Tool result truncation ────────────────────────────────────────────────────
 
-_MAX_TOOL_BYTES = 50 * 1024
+_MAX_TOOL_BYTES = 50 * 1024  # default; overridable via AgentConfig.tool_max_bytes
 
-def _truncate_tool_result(content: str) -> str:
+def _truncate_tool_result(content: str, max_bytes: int = _MAX_TOOL_BYTES) -> str:
     encoded = content.encode("utf-8")
-    if len(encoded) <= _MAX_TOOL_BYTES:
+    if len(encoded) <= max_bytes:
         return content
-    return encoded[:_MAX_TOOL_BYTES].decode("utf-8", errors="ignore") + \
+    return encoded[:max_bytes].decode("utf-8", errors="ignore") + \
            "\n[Output truncated — use offset/limit to read more]"
 
 # ── agent_loop ────────────────────────────────────────────────────────────────
@@ -348,8 +221,9 @@ async def agent_loop(
 
         # Execute tool calls
         for i, call in enumerate(tool_calls):
-            blocked, reason = await _hook_before_tool(config.hooks, call, turn_number)
-            if blocked:
+            decision = await _hook_before_tool(config.hooks, call, turn_number)
+            if decision.block:
+                reason = decision.reason
                 yield ToolBlockedAgentEvent(id=call.id, name=call.name, reason=reason or "blocked")
                 tool_result = ToolResult(content=f"Tool call blocked: {reason}", is_error=True)
                 all_tool_records.append(ToolCallRecord(
@@ -372,7 +246,9 @@ async def agent_loop(
                 tool_result = ToolResult(content=f"Unknown tool: {call.name}", is_error=True)
             else:
                 try:
-                    tool_result = await tool.execute(call.arguments, cwd=".", signal=abort)
+                    tool_result = await tool.execute(
+                        call.arguments, cwd=config.cwd, signal=abort,
+                    )
                 except Exception as exc:
                     tool_result = ToolResult(content=str(exc), is_error=True)
 
@@ -381,7 +257,7 @@ async def agent_loop(
             after = await _hook_after_tool(config.hooks, call, tool_result, turn_number)
             context_result = after if after is not None else tool_result
 
-            truncated_content = _truncate_tool_result(context_result.content)
+            truncated_content = _truncate_tool_result(context_result.content, config.tool_max_bytes)
             result_msg = ToolResultMessage(
                 tool_call_id=call.id, content=truncated_content,
                 is_error=context_result.is_error, timestamp=int(time.time() * 1000),
@@ -528,39 +404,45 @@ def make_config(
     system_prompt: list[SystemPromptSection],
     tool_registry: ToolRegistry,
     cwd: str,
-    thinking: str = "off",
-    max_turns: int = 100,  # Fix 4: raised from 50
+    thinking: str = "medium",
+    max_turns: int = 100,
     project_root: str | None = None,
     max_tokens: int | None = None,
     signal: asyncio.Event | None = None,
-    hooks: Any | None = None,
+    hooks: Hooks | None = None,
     *,
-    provider: AnthropicProvider | None = None,
+    provider: LLMProvider | None = None,
 ) -> AgentConfig:
     """
-    Factory: build AgentConfig, injecting cwd into tool registry execution
-    and encapsulating api_key inside an AnthropicProvider instance.
+    Factory: build AgentConfig.
 
-    Pass provider= directly (e.g. a mock) to skip AnthropicProvider construction —
-    useful in tests. If provider is None, api_key must be supplied.
+    cwd is stored on AgentConfig and passed straight to tool.execute() — the
+    loop owns cwd injection now (no registry-wrapping proxy).
+
+    Pass provider= directly (e.g. a mock) to skip default-provider construction.
+    If provider is None, api_key must be supplied and a default AnthropicProvider
+    is constructed lazily (the only place loop.py touches a concrete adapter —
+    kept lazy so the SDK is not imported at module load).
+
+    project_root lets autonomous mode point to the repo even when cwd is a
+    worktree sibling that has no .agent-forge/ of its own.
     """
     if provider is None:
         if not api_key:
             raise ValueError("Either api_key or provider must be supplied to make_config()")
-        # Fix 10: project_root lets autonomous mode point to the repo even when
-        # cwd is a worktree sibling that has no .agent-forge/ of its own.
+        from .anthropic_provider import AnthropicProvider
         provider = AnthropicProvider(api_key, cwd=cwd, project_root=project_root)
-    patched = _CwdPatchedRegistry(tool_registry, cwd)
     return AgentConfig(
         model=model,
         system_prompt=system_prompt,
         provider=provider,
-        tool_registry=patched,
+        tool_registry=tool_registry,
+        cwd=cwd,
         thinking=thinking,
         max_turns=max_turns,
         max_tokens=max_tokens if max_tokens is not None else model.max_tokens,
         signal=signal,
-        hooks=hooks,
+        hooks=hooks if hooks is not None else NoopHooks(),
     )
 
 
@@ -593,48 +475,3 @@ async def run_agent(
             raise RuntimeError(f"Agent error: {event.error}")
     # Unreachable — agent_loop always terminates with DoneAgentEvent or raises above.
     raise RuntimeError("agent_loop ended without DoneAgentEvent")
-
-
-class _CwdPatchedRegistry(ToolRegistry):
-    """Wraps a ToolRegistry, injecting cwd into every tool.execute() call."""
-
-    def __init__(self, inner: ToolRegistry, cwd: str) -> None:
-        super().__init__()
-        self._inner = inner
-        self._cwd = cwd
-
-    def get(self, name: str):  # type: ignore[override]
-        tool = self._inner.get(name)
-        if tool is None:
-            return None
-        return _CwdBoundTool(tool, self._cwd)
-
-    def definitions(self) -> list[ToolDefinition]:
-        return self._inner.definitions()
-
-    def names(self) -> list[str]:
-        return self._inner.names()
-
-
-class _CwdBoundTool:
-    def __init__(self, tool: Any, cwd: str) -> None:
-        self._tool = tool
-        self._cwd = cwd
-
-    @property
-    def name(self) -> str:
-        return self._tool.name
-
-    @property
-    def description(self) -> str:
-        return self._tool.description
-
-    @property
-    def parameters(self) -> dict:
-        return self._tool.parameters
-
-    async def execute(self, args: dict, *, cwd: str = ".", signal=None) -> ToolResult:
-        return await self._tool.execute(args, cwd=self._cwd, signal=signal)
-
-    def definition(self) -> ToolDefinition:
-        return self._tool.definition()
