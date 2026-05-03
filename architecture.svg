@@ -1,0 +1,338 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1120"
+     font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+
+  <!--
+    agent_forge — current-state module architecture
+    Generated to mirror AGENTS.md after the refactor pass.
+
+    14 modules, 6 layers, leaf → root.  Lower layers must never import upward.
+
+    PALETTE (consistent with prior diagrams)
+    Title bar              : #2c4262
+    Roots — chat (blue)    : #c9d3e6 / stroke #2c4262
+    Roots — auto (purple)  : #ddd6ef / stroke #5b21b6
+    Composition support    : #cee5dd / stroke #2c5d56
+    Engine (loop, amber)   : #fbf3df / stroke #d6a86a
+    Domain (cream)         : #efe6d2 / stroke #6e5a30
+    Provider (gray)        : #d9dade / stroke #444851
+    Leaf value types       : #f1f5f9 / stroke #475569
+    Hook badge             : #ede9fe / stroke #5b21b6
+    Test badge             : #fff1f2 / stroke #e11d48
+    Arrow gray             : #6f7d8e
+    Arrow strong           : #2c4262
+  -->
+
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M1,1 L8,4.5 L1,8" fill="none" stroke="#6f7d8e" stroke-width="1.3"/>
+    </marker>
+    <marker id="arr-strong" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M1,1 L8,4.5 L1,8" fill="none" stroke="#2c4262" stroke-width="1.5"/>
+    </marker>
+    <marker id="arr-purple" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M1,1 L8,4.5 L1,8" fill="none" stroke="#5b21b6" stroke-width="1.5"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="1120" fill="#ffffff"/>
+
+  <!-- ── Title bar ─────────────────────────────────────────── -->
+  <rect x="0" y="0" width="1600" height="50" fill="#2c4262"/>
+  <text x="800" y="24" text-anchor="middle" font-size="17" font-weight="700"
+        fill="#ffffff" letter-spacing="0.4">agent_forge — Module Architecture</text>
+  <text x="800" y="42" text-anchor="middle" font-size="10.5" fill="#c8d6e4" letter-spacing="0.3">
+    14 flat modules · 6 layers · async-generator loop · drive() drain seam · Hooks Protocol · 8 test files
+  </text>
+
+  <!-- ══════════════════════════════════════════════════════════
+       LAYER STRIP — left margin (x=18..156) labels each row
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- L5 Composition Roots ───────────────────────── y=70 h=120 -->
+  <rect x="18" y="70" width="138" height="120" rx="10" fill="#eef2f8" stroke="#2c4262" stroke-width="1"/>
+  <text x="87" y="108" text-anchor="middle" font-size="11" font-weight="700" fill="#2c4262">L5</text>
+  <text x="87" y="126" text-anchor="middle" font-size="11" font-weight="700" fill="#2c4262">Composition</text>
+  <text x="87" y="142" text-anchor="middle" font-size="11" font-weight="700" fill="#2c4262">Roots</text>
+  <text x="87" y="160" text-anchor="middle" font-size="9" fill="#4a5568" font-style="italic">entry points</text>
+
+  <!-- chat.py -->
+  <rect x="170" y="70" width="672" height="120" rx="10" fill="#c9d3e6" stroke="#2c4262" stroke-width="1.6"/>
+  <text x="506" y="94" text-anchor="middle" font-size="14" font-weight="700" fill="#1c1d1f">chat.py</text>
+  <text x="506" y="111" text-anchor="middle" font-size="10" fill="#4a5568">interactive REPL · paste collapse · slash commands · CLI entry (main)</text>
+  <text x="506" y="127" text-anchor="middle" font-size="10" fill="#4a5568">run_chat() · _run_single_prompt() · _extract_learnings() / _save_learnings()</text>
+  <text x="506" y="143" text-anchor="middle" font-size="10" fill="#4a5568">/quit  /clear  /status  /model  ·  --continue  --resume  --prompt  --verbose</text>
+  <text x="506" y="161" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">drives loop via runner.drive(); persists session; manages ContextWindow</text>
+  <text x="506" y="178" text-anchor="middle" font-size="9" fill="#6f7d8e">396 LOC · imports: context, loop, messages, models, prompts, renderer, runner, session, tools</text>
+
+  <!-- autonomous.py -->
+  <rect x="882" y="70" width="672" height="120" rx="10" fill="#ddd6ef" stroke="#5b21b6" stroke-width="1.6"/>
+  <text x="1218" y="94" text-anchor="middle" font-size="14" font-weight="700" fill="#1c1d1f">autonomous.py</text>
+  <text x="1218" y="111" text-anchor="middle" font-size="10" fill="#4a5568">git-isolated state machine · worktree lifecycle · delivery (pr/merge/output/none)</text>
+  <text x="1218" y="127" text-anchor="middle" font-size="10" fill="#4a5568">AutonomousFlow · FlowState · _gate_checks() · _execute() · _verify() · _deliver()</text>
+  <text x="1218" y="143" text-anchor="middle" font-size="10" fill="#4a5568">run_autonomous(AutonomousConfig(...)) · creates branch agent/&lt;name&gt;-&lt;uuid8&gt;</text>
+  <rect x="900" y="151" width="240" height="22" rx="6" fill="#ede9fe" stroke="#5b21b6" stroke-width="1"/>
+  <text x="1020" y="166" text-anchor="middle" font-size="9" font-weight="700" fill="#5b21b6">⬡ BashGuardHook → Hooks seam (L3)</text>
+  <text x="1346" y="163" text-anchor="middle" font-size="9" fill="#6f7d8e">411 LOC · no REPL, no JSONL persistence</text>
+
+  <!-- L4 Composition Support ──────────────────── y=210 h=110 -->
+  <rect x="18" y="210" width="138" height="110" rx="10" fill="#eef2f8" stroke="#2c5d56" stroke-width="1"/>
+  <text x="87" y="248" text-anchor="middle" font-size="11" font-weight="700" fill="#2c5d56">L4</text>
+  <text x="87" y="266" text-anchor="middle" font-size="11" font-weight="700" fill="#2c5d56">Composition</text>
+  <text x="87" y="282" text-anchor="middle" font-size="11" font-weight="700" fill="#2c5d56">Support</text>
+  <text x="87" y="300" text-anchor="middle" font-size="9" fill="#4a5568" font-style="italic">used by both roots</text>
+
+  <!-- renderer.py -->
+  <rect x="170" y="210" width="434" height="110" rx="10" fill="#cee5dd" stroke="#2c5d56" stroke-width="1.6"/>
+  <text x="387" y="232" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">renderer.py</text>
+  <text x="387" y="250" text-anchor="middle" font-size="10" fill="#4a5568">render_event(AgentEvent) · ANSI helpers</text>
+  <text x="387" y="265" text-anchor="middle" font-size="10" fill="#4a5568">dim · bold · green · red · yellow · cyan</text>
+  <text x="387" y="280" text-anchor="middle" font-size="10" fill="#4a5568">print_footer · get_console (Rich singleton)</text>
+  <text x="387" y="299" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">handles every AgentEvent branch — exhaustive match</text>
+  <text x="387" y="313" text-anchor="middle" font-size="9" fill="#6f7d8e">239 LOC · imports: loop, messages</text>
+
+  <!-- runner.py -->
+  <rect x="644" y="210" width="436" height="110" rx="10" fill="#cee5dd" stroke="#2c5d56" stroke-width="2"/>
+  <text x="862" y="232" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">runner.py  ·  drive() seam</text>
+  <text x="862" y="250" text-anchor="middle" font-size="10" fill="#4a5568">async drive(config, messages, on_event=…) → AgentResult</text>
+  <text x="862" y="265" text-anchor="middle" font-size="10" fill="#4a5568">single drain helper — never raises</text>
+  <text x="862" y="280" text-anchor="middle" font-size="10" fill="#4a5568">collapses the agent_loop drain pattern in both roots</text>
+  <text x="862" y="299" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">on_event hook lets caller observe events without owning the loop</text>
+  <text x="862" y="313" text-anchor="middle" font-size="9" fill="#6f7d8e">59 LOC · imports: loop, messages</text>
+
+  <!-- prompts.py -->
+  <rect x="1120" y="210" width="434" height="110" rx="10" fill="#cee5dd" stroke="#2c5d56" stroke-width="1.6"/>
+  <text x="1337" y="232" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">prompts.py</text>
+  <text x="1337" y="250" text-anchor="middle" font-size="10" fill="#4a5568">build_system_prompt(...) — REPL system prompt</text>
+  <text x="1337" y="265" text-anchor="middle" font-size="10" fill="#4a5568">build_autonomous_prompt(...) — flow framing</text>
+  <text x="1337" y="280" text-anchor="middle" font-size="10" fill="#4a5568">_load_agents_doc · _build_repo_map · _TOOLS_SECTION</text>
+  <text x="1337" y="299" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">AGENTS.md → CLAUDE.md fallback · 32 KB cap</text>
+  <text x="1337" y="313" text-anchor="middle" font-size="9" fill="#6f7d8e">352 LOC · imports: session, system_prompt</text>
+
+  <!-- L3 Engine ─────────────────────────────────── y=340 h=140 -->
+  <rect x="18" y="340" width="138" height="140" rx="10" fill="#fbf3df" stroke="#d6a86a" stroke-width="1"/>
+  <text x="87" y="394" text-anchor="middle" font-size="11" font-weight="700" fill="#8a6020">L3</text>
+  <text x="87" y="412" text-anchor="middle" font-size="11" font-weight="700" fill="#8a6020">Engine</text>
+  <text x="87" y="430" text-anchor="middle" font-size="9" fill="#6e5a30" font-style="italic">async-generator</text>
+  <text x="87" y="444" text-anchor="middle" font-size="9" fill="#6e5a30" font-style="italic">orchestrator</text>
+
+  <!-- loop.py -->
+  <rect x="170" y="340" width="1384" height="140" rx="10" fill="#fbf3df" stroke="#d6a86a" stroke-width="2"/>
+  <text x="862" y="364" text-anchor="middle" font-size="14" font-weight="700" fill="#1c1d1f">loop.py  ·  the agent loop</text>
+  <text x="862" y="384" text-anchor="middle" font-size="10.5" fill="#4a5568">
+    agent_loop() async-generator  ·  run_agent() drain helper  ·  AgentConfig · AgentResult · make_config(cwd, …)
+  </text>
+  <text x="862" y="400" text-anchor="middle" font-size="10.5" fill="#4a5568">
+    AgentEvent union (12 frozen dataclasses)  ·  retry w/ exponential backoff  ·  tool result truncation (50 KB)
+  </text>
+  <text x="862" y="416" text-anchor="middle" font-size="10.5" fill="#4a5568">
+    _CwdPatchedRegistry / _CwdBoundTool inject cwd  ·  turn-completeness + abort-completeness invariants
+  </text>
+
+  <!-- Hooks badge inside loop -->
+  <rect x="500" y="430" width="724" height="34" rx="8" fill="#ede9fe" stroke="#5b21b6" stroke-width="1.4"/>
+  <text x="862" y="445" text-anchor="middle" font-size="11" font-weight="700" fill="#5b21b6">⬡ Hooks Protocol seam</text>
+  <text x="862" y="459" text-anchor="middle" font-size="9.5" fill="#6d28d9">
+    before_llm · before_tool_call (HookDecision veto) · after_tool_call  ·  default NoopHooks  ·  injected via AgentConfig.hooks
+  </text>
+
+  <!-- L2 Domain ──────────────────────────────────── y=500 h=120 -->
+  <rect x="18" y="500" width="138" height="120" rx="10" fill="#efe6d2" stroke="#6e5a30" stroke-width="1"/>
+  <text x="87" y="544" text-anchor="middle" font-size="11" font-weight="700" fill="#6e5a30">L2</text>
+  <text x="87" y="562" text-anchor="middle" font-size="11" font-weight="700" fill="#6e5a30">Domain</text>
+  <text x="87" y="580" text-anchor="middle" font-size="9" fill="#6e5a30" font-style="italic">tools · state ·</text>
+  <text x="87" y="594" text-anchor="middle" font-size="9" fill="#6e5a30" font-style="italic">prompts · session</text>
+
+  <!-- 4-col layer: each 316 wide, gaps 40, x=170/526/882/1238 -->
+  <!-- tools.py -->
+  <rect x="170" y="500" width="316" height="120" rx="10" fill="#efe6d2" stroke="#6e5a30" stroke-width="1.6"/>
+  <text x="328" y="522" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">tools.py</text>
+  <text x="328" y="540" text-anchor="middle" font-size="10" fill="#4a5568">Tool Protocol · ToolRegistry</text>
+  <text x="328" y="555" text-anchor="middle" font-size="10" fill="#4a5568">default_registry()</text>
+  <text x="328" y="570" text-anchor="middle" font-size="10" fill="#4a5568">Bash · Read · Write · Edit · Grep · Find</text>
+  <text x="328" y="585" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">_sandbox(cwd) · _cap(50 KB)</text>
+  <text x="328" y="600" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">never raises — ToolResult(is_error)</text>
+  <text x="328" y="613" text-anchor="middle" font-size="9" fill="#6f7d8e">472 LOC · imports: messages</text>
+
+  <!-- context.py -->
+  <rect x="526" y="500" width="316" height="120" rx="10" fill="#efe6d2" stroke="#6e5a30" stroke-width="1.6"/>
+  <text x="684" y="522" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">context.py</text>
+  <text x="684" y="540" text-anchor="middle" font-size="10" fill="#4a5568">ContextWindow aggregate</text>
+  <text x="684" y="555" text-anchor="middle" font-size="10" fill="#4a5568">PressureTier · assess_pressure()</text>
+  <text x="684" y="570" text-anchor="middle" font-size="10" fill="#4a5568">P4 evict · CompactionPort (DI)</text>
+  <text x="684" y="585" text-anchor="middle" font-size="10" fill="#4a5568">manage_pressure() · build_messages()</text>
+  <text x="684" y="600" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">init_from_existing() resumes</text>
+  <text x="684" y="613" text-anchor="middle" font-size="9" fill="#6f7d8e">420 LOC · imports: messages, models, system_prompt</text>
+
+  <!-- system_prompt.py -->
+  <rect x="882" y="500" width="316" height="120" rx="10" fill="#efe6d2" stroke="#6e5a30" stroke-width="1.6"/>
+  <text x="1040" y="522" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">system_prompt.py</text>
+  <text x="1040" y="540" text-anchor="middle" font-size="10" fill="#4a5568">SystemPrompt · SectionName</text>
+  <text x="1040" y="555" text-anchor="middle" font-size="10" fill="#4a5568">ordered sections · cache_group</text>
+  <text x="1040" y="570" text-anchor="middle" font-size="10" fill="#4a5568">build() places cache_control</text>
+  <text x="1040" y="585" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">last non-null per group → cached</text>
+  <text x="1040" y="600" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">volatile (ENV/CUSTOM) never cached</text>
+  <text x="1040" y="613" text-anchor="middle" font-size="9" fill="#6f7d8e">168 LOC · imports: messages</text>
+
+  <!-- session.py -->
+  <rect x="1238" y="500" width="316" height="120" rx="10" fill="#efe6d2" stroke="#6e5a30" stroke-width="1.6"/>
+  <text x="1396" y="522" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">session.py</text>
+  <text x="1396" y="540" text-anchor="middle" font-size="10" fill="#4a5568">JSONL append log · resume</text>
+  <text x="1396" y="555" text-anchor="middle" font-size="10" fill="#4a5568">append_message · append_metadata</text>
+  <text x="1396" y="570" text-anchor="middle" font-size="10" fill="#4a5568">memory.md read/write · dedup · cap</text>
+  <text x="1396" y="585" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">latest_session_id() · resume_session()</text>
+  <text x="1396" y="600" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">~2 K token cap · 60-char dedup prefix</text>
+  <text x="1396" y="613" text-anchor="middle" font-size="9" fill="#6f7d8e">310 LOC · imports: messages</text>
+
+  <!-- L1 Provider seam ─────────────────────────── y=640 h=110 -->
+  <rect x="18" y="640" width="138" height="110" rx="10" fill="#eef0f3" stroke="#444851" stroke-width="1"/>
+  <text x="87" y="678" text-anchor="middle" font-size="11" font-weight="700" fill="#444851">L1</text>
+  <text x="87" y="696" text-anchor="middle" font-size="11" font-weight="700" fill="#444851">Provider</text>
+  <text x="87" y="712" text-anchor="middle" font-size="11" font-weight="700" fill="#444851">Seam</text>
+  <text x="87" y="730" text-anchor="middle" font-size="9" fill="#4a5568" font-style="italic">Protocol + adapter</text>
+
+  <!-- provider.py -->
+  <rect x="170" y="640" width="672" height="110" rx="10" fill="#d9dade" stroke="#444851" stroke-width="1.6"/>
+  <text x="506" y="662" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">provider.py  ·  Protocol</text>
+  <text x="506" y="680" text-anchor="middle" font-size="10" fill="#4a5568">LLMProvider Protocol  ·  StreamEvent union</text>
+  <text x="506" y="696" text-anchor="middle" font-size="10" fill="#4a5568">re-exports messages + models for backward compat</text>
+  <text x="506" y="712" text-anchor="middle" font-size="10" fill="#4a5568">no SDK import here — pure abstraction seam for testing</text>
+  <text x="506" y="731" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">FakeProvider in tests/fake_provider.py satisfies this Protocol</text>
+  <text x="506" y="745" text-anchor="middle" font-size="9" fill="#6f7d8e">120 LOC · imports: messages, models, anthropic_provider (re-export)</text>
+
+  <!-- anthropic_provider.py -->
+  <rect x="882" y="640" width="672" height="110" rx="10" fill="#d9dade" stroke="#444851" stroke-width="1.6"/>
+  <text x="1218" y="662" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">anthropic_provider.py  ·  SDK adapter</text>
+  <text x="1218" y="680" text-anchor="middle" font-size="10" fill="#4a5568">AnthropicProvider.stream() · _do_stream() · _to_api_messages()</text>
+  <text x="1218" y="696" text-anchor="middle" font-size="10" fill="#4a5568">OAuth vs API key detection (_is_oauth) · beta headers</text>
+  <text x="1218" y="712" text-anchor="middle" font-size="10" fill="#4a5568">only file that imports the anthropic SDK — replaceable seam</text>
+  <text x="1218" y="731" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">handles thinking blocks · tool_use · cache_control · prompt caching</text>
+  <text x="1218" y="745" text-anchor="middle" font-size="9" fill="#6f7d8e">517 LOC · imports: messages, models, provider</text>
+
+  <!-- L0 Leaf ─────────────────────────────────── y=770 h=100 -->
+  <rect x="18" y="770" width="138" height="100" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1"/>
+  <text x="87" y="808" text-anchor="middle" font-size="11" font-weight="700" fill="#475569">L0</text>
+  <text x="87" y="826" text-anchor="middle" font-size="11" font-weight="700" fill="#475569">Leaf</text>
+  <text x="87" y="842" text-anchor="middle" font-size="9" fill="#4a5568" font-style="italic">value types</text>
+  <text x="87" y="856" text-anchor="middle" font-size="9" fill="#4a5568" font-style="italic">no internal imports</text>
+
+  <!-- messages.py -->
+  <rect x="170" y="770" width="672" height="100" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.6"/>
+  <text x="506" y="792" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">messages.py</text>
+  <text x="506" y="810" text-anchor="middle" font-size="10" fill="#4a5568">UserMessage · AssistantMessage · ToolResultMessage  ·  Message union</text>
+  <text x="506" y="826" text-anchor="middle" font-size="10" fill="#4a5568">TextContent · ThinkingContent · ToolCallContent  ·  ToolResult · ToolDefinition</text>
+  <text x="506" y="842" text-anchor="middle" font-size="10" fill="#4a5568">TokenUsage · ZERO_USAGE  ·  SystemPromptSection</text>
+  <text x="506" y="861" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">all @dataclass(frozen=True) · 120 LOC · NO internal imports</text>
+
+  <!-- models.py -->
+  <rect x="882" y="770" width="672" height="100" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.6"/>
+  <text x="1218" y="792" text-anchor="middle" font-size="13" font-weight="700" fill="#1c1d1f">models.py</text>
+  <text x="1218" y="810" text-anchor="middle" font-size="10" fill="#4a5568">Model dataclass · ModelCost (input/output/cache pricing)</text>
+  <text x="1218" y="826" text-anchor="middle" font-size="10" fill="#4a5568">MODELS dict · DEFAULT_MODEL = claude-sonnet-4-6</text>
+  <text x="1218" y="842" text-anchor="middle" font-size="10" fill="#4a5568">used by /model slash command, AgentConfig, AnthropicProvider</text>
+  <text x="1218" y="861" text-anchor="middle" font-size="9" fill="#6f7d8e" font-style="italic">50 LOC · NO internal imports</text>
+
+  <!-- ══════════════════════════════════════════════════════════
+       DEPENDENCY ARROWS — between layers (top → bottom)
+       Each arrow is a thick faded chevron; full mapping in text.
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- L5 → L4 -->
+  <line x1="506" y1="190" x2="387" y2="208" stroke="#6f7d8e" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="506" y1="190" x2="862" y2="208" stroke="#2c4262" stroke-width="1.5" marker-end="url(#arr-strong)"/>
+  <line x1="506" y1="190" x2="1337" y2="208" stroke="#6f7d8e" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="1218" y1="190" x2="862" y2="208" stroke="#5b21b6" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <line x1="1218" y1="190" x2="1337" y2="208" stroke="#6f7d8e" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="1218" y1="190" x2="387" y2="208" stroke="#6f7d8e" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <!-- L4 → L3 (renderer/runner depend on loop; prompts does NOT) -->
+  <line x1="387" y1="320" x2="600" y2="338" stroke="#6f7d8e" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="862" y1="320" x2="862" y2="338" stroke="#2c4262" stroke-width="1.6" marker-end="url(#arr-strong)"/>
+  <text x="876" y="332" font-size="9" fill="#2c4262" font-style="italic">drains AgentEvent</text>
+
+  <!-- L5 chat directly imports L2 (context, session, tools) — show one strong arrow -->
+  <path d="M 380 190 Q 320 350 328 498" fill="none" stroke="#6f7d8e" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+  <text x="226" y="318" font-size="9" fill="#6f7d8e" font-style="italic">chat → tools / context / session</text>
+
+  <!-- prompts (L4) → session, system_prompt (L2) -->
+  <path d="M 1337 320 Q 1337 410 1396 498" fill="none" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+  <path d="M 1300 320 Q 1180 410 1040 498" fill="none" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+
+  <!-- L3 loop → L2 tools -->
+  <line x1="328" y1="480" x2="328" y2="498" stroke="#2c4262" stroke-width="1.5" marker-end="url(#arr-strong)"/>
+  <text x="338" y="494" font-size="9" fill="#2c4262" font-style="italic">execute</text>
+
+  <!-- L3 loop → L1 provider/anthropic_provider (skip-layer) -->
+  <path d="M 700 480 Q 600 560 506 638" fill="none" stroke="#2c4262" stroke-width="1.5" marker-end="url(#arr-strong)"/>
+  <path d="M 1024 480 Q 1100 560 1218 638" fill="none" stroke="#2c4262" stroke-width="1.5" marker-end="url(#arr-strong)"/>
+  <text x="540" y="565" font-size="9" fill="#2c4262" font-style="italic">stream()</text>
+
+  <!-- L2 → L0 (each domain box → messages) -->
+  <line x1="328" y1="620" x2="380" y2="768" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="684" y1="620" x2="500" y2="768" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="1040" y1="620" x2="600" y2="768" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="1396" y1="620" x2="700" y2="768" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+  <!-- context → models -->
+  <line x1="700" y1="620" x2="1100" y2="768" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+  <!-- context → system_prompt (intra-L2) -->
+  <line x1="842" y1="560" x2="882" y2="560" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+
+  <!-- L1 → L0 -->
+  <line x1="506" y1="750" x2="506" y2="768" stroke="#6f7d8e" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="1218" y1="750" x2="1218" y2="768" stroke="#6f7d8e" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="540" y1="750" x2="1180" y2="768" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+  <line x1="1180" y1="750" x2="540" y2="768" stroke="#6f7d8e" stroke-width="1" marker-end="url(#arr)"/>
+
+  <!-- ══════════════════════════════════════════════════════════
+       FOOTER — Tests, Invariants, AgentEvent flow
+       y = 890..1100
+  ═══════════════════════════════════════════════════════════════ -->
+  <line x1="14" y1="888" x2="1586" y2="888" stroke="#e2e8f0" stroke-width="1.5"/>
+
+  <!-- AgentEvent flow strip -->
+  <rect x="18" y="900" width="1066" height="100" rx="10" fill="#fefcf4" stroke="#d6a86a" stroke-width="1.4"/>
+  <text x="34" y="922" font-size="12" font-weight="700" fill="#8a6020">AgentEvent flow  ·  one stream, two consumers</text>
+  <text x="34" y="942" font-size="10" fill="#4a5568">
+    loop.agent_loop() yields → runner.drive() drains in order →
+    on_event callback observes (renderer.render_event prints, autonomous logs) → AgentResult returned to root.
+  </text>
+  <text x="34" y="960" font-size="10" fill="#4a5568">
+    12 event types: ThinkingDeltaEvent · TextDeltaEvent · ToolCallEvent · ToolResultEvent · UsageEvent ·
+    PressureEvent · CompactionEvent · DoneEvent · DoneAgentEvent · AbortedAgentEvent · ErrorEvent · RetryEvent.
+  </text>
+  <text x="34" y="978" font-size="10" fill="#4a5568">
+    Invariants: turn-completeness (no partial assistant on error)  ·  abort-completeness (placeholder ToolResult for unrun calls)  ·  single exit via DoneAgentEvent.
+  </text>
+  <text x="34" y="994" font-size="9" fill="#6f7d8e" font-style="italic">
+    drive() never raises — chat catches result.error · autonomous transitions FlowState on error.
+  </text>
+
+  <!-- Tests strip -->
+  <rect x="1100" y="900" width="486" height="100" rx="10" fill="#fff1f2" stroke="#e11d48" stroke-width="1.4"/>
+  <text x="1116" y="922" font-size="12" font-weight="700" fill="#9f1239">Tests  ·  tests/  (8 files)</text>
+  <text x="1116" y="942" font-size="10" fill="#4a5568">test_agent_loop · test_session_roundtrip · test_tools</text>
+  <text x="1116" y="958" font-size="10" fill="#4a5568">test_hooks · test_prompts · test_context · test_renderer</text>
+  <text x="1116" y="974" font-size="10" fill="#4a5568">test_runner · test_autonomous</text>
+  <text x="1116" y="993" font-size="9" fill="#6f7d8e" font-style="italic">
+    fake_provider.py — FakeProvider implements LLMProvider seam.
+  </text>
+
+  <!-- Bottom note: dependency rule -->
+  <rect x="18" y="1014" width="1568" height="78" rx="10" fill="#f7fafc" stroke="#cbd5e0" stroke-width="1"/>
+  <text x="34" y="1036" font-size="11" font-weight="700" fill="#2c4262">Dependency rule</text>
+  <text x="34" y="1054" font-size="10" fill="#4a5568">
+    Lower layers must never import from higher layers. Within a layer, modules may not cycle.
+    L0 (messages, models) has zero internal imports.  L1 wraps the SDK behind a Protocol.
+    L2 modules depend only on L0/L1 and at most each other intra-layer (context → system_prompt only).
+  </text>
+  <text x="34" y="1072" font-size="10" fill="#4a5568">
+    L3 (loop) is the sole orchestrator — yields AgentEvent, runs tools, streams from provider, hosts the Hooks seam.
+    L4 wraps L3 for callers (drive · render · build prompts).
+    L5 composes everything into chat (REPL) and autonomous (git-isolated pipeline).
+  </text>
+  <text x="34" y="1086" font-size="9" fill="#6f7d8e" font-style="italic">
+    See AGENTS.md for the full Concept Index, Change Impact Map, and Policies table.
+  </text>
+
+</svg>
