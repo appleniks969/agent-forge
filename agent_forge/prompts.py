@@ -240,17 +240,6 @@ def build_repo_map(cwd: str) -> str | None:
         return None
 
 
-def _build_wiki_section_safe(cwd: str) -> str | None:
-    """Best-effort WIKI section build. Wiki is optional; failures must not
-    break the chat prompt. Lazy import keeps the wiki subsystem optional.
-    """
-    try:
-        from .wiki.present import build_wiki_section
-        return build_wiki_section(cwd)
-    except Exception:
-        return None
-
-
 def environment_section(
     cwd: str,
     *,
@@ -293,9 +282,6 @@ def build_chat_prompt(
 
     memory = load_memory_deduped(cfg.cwd, [agents_md or ""])
     sp.register(SectionName.MEMORY, lambda: memory if memory.strip() else None)
-
-    wiki_section = _build_wiki_section_safe(cfg.cwd)
-    sp.register(SectionName.WIKI, lambda: wiki_section)
 
     repo_map = build_repo_map(cfg.cwd)
     sp.register(SectionName.REPO_MAP, lambda: repo_map)

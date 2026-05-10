@@ -170,21 +170,3 @@ def test_build_chat_prompt_includes_chat_identity(tmp_path):
     blob = "\n".join(s.text for s in sp.build())
     assert "interactive chat mode" in blob
     assert TOOLS_SECTION in blob
-
-
-def test_build_chat_prompt_includes_wiki_when_curated_present(tmp_path):
-    """When .agent-forge/curated/ has content, the WIKI section is injected."""
-    curated = tmp_path / ".agent-forge" / "curated"
-    curated.mkdir(parents=True)
-    (curated / "onboarding.md").write_text("Start here: see payments/.", encoding="utf-8")
-    sp = build_chat_prompt(_FakeCfg(str(tmp_path)), default_registry())
-    blob = "\n".join(s.text for s in sp.build())
-    assert "Repository wiki" in blob
-    assert "Start here" in blob
-
-
-def test_build_chat_prompt_omits_wiki_when_no_data(tmp_path):
-    """No .agent-forge/ → WIKI section is silently absent (not crashed)."""
-    sp = build_chat_prompt(_FakeCfg(str(tmp_path)), default_registry())
-    blob = "\n".join(s.text for s in sp.build())
-    assert "Repository wiki" not in blob

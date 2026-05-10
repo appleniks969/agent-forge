@@ -62,10 +62,6 @@ class ChatConfig:
     continue_session: bool = False
     resume_id: str | None = None
     custom_system_prompt: str | None = None
-    # MVP-2.5: automatically distill session insights into raw/notes/session/
-    # on graceful exit. Default off so the user doesn't pay for an LLM call
-    # they didn't ask for; opt in via --ratchet.
-    auto_ratchet: bool = False
 
 # ── Paste handling ────────────────────────────────────────────────────────────
 
@@ -287,46 +283,6 @@ async def run_chat(cfg: ChatConfig) -> None:
             runtime.clear()
             print(dim("Conversation cleared."))
             continue
-        if user_input == "/ratchet":
-            await _run_ratchet(cfg, session_id, verbose=True)
-            continue
-        if user_input.startswith("/wrong "):
-            correction = user_input[len("/wrong "):].strip()
-            if not correction:
-                print(red("Usage: /wrong <what the agent got wrong>"))
-                continue
-            try:
-                from .wiki.metrics import record_override
-                record_override(
-                    cfg.cwd,
-                    session_id=session_id,
-                    turn=runtime.context.current_turn,
-                    citation_id="(unattributed)",
-                    user_correction=correction,
-                )
-                print(dim(f"[metrics] override logged ({correction[:60]})"))
-            except Exception as exc:
-                print(dim(f"[metrics] failed: {exc}"))
-            continue
-        if user_input == "/wiki":
-            try:
-                from .wiki.metrics import summarise
-                s = summarise(cfg.cwd)
-                print(bold("── Wiki health ──"))
-                print(f"  Citations (last {s.window_days}d): {s.citations_n}")
-                print(f"  Overrides  (last {s.window_days}d): {s.overrides_n}")
-                if s.stale_areas:
-                    print("  Stale areas (days lag):")
-                    for area, days in s.stale_areas[:5]:
-                        marker = "?" if days < 0 else f"{days}d"
-                        print(f"    {area:<30}  {marker}")
-                if s.citation_sources:
-                    print("  Top cited sources:")
-                    for src, n in s.citation_sources[:5]:
-                        print(f"    {src:<40}  {n}")
-            except Exception as exc:
-                print(dim(f"[wiki] {exc}"))
-            continue
         if user_input == "/status":
             tok = runtime.context.estimate_tokens()
             pct = tok / cfg.model.context_window * 100
@@ -400,45 +356,6 @@ async def run_chat(cfg: ChatConfig) -> None:
                 if tier.value != "none":
                     print(dim(f"[context] pressure tier: {tier.value}"))
 
-    # End of REPL loop. If the user exited gracefully and opted into ratchet,
-    # distill insights now (skipped on KeyboardInterrupt-during-turn so we
-    # don't burn tokens on an aborted session).
-    if _exited_gracefully and cfg.auto_ratchet and len(messages) >= 2:
-        await _run_ratchet(cfg, session_id, verbose=cfg.verbose)
-
-
-# ── Ratchet helper (MVP-2.5) ──────────────────────────────────────────────────
-
-async def _run_ratchet(cfg: ChatConfig, session_id: str, *, verbose: bool) -> None:
-    """Distill the current session into raw/notes/session/<sid>.md.
-
-    Best-effort: any failure is logged in dim text; never raises out to the
-    REPL caller. The wiki subsystem is optional, so import lazily.
-    """
-    try:
-        from .anthropic_provider import AnthropicProvider
-        from .wiki.ratchet import ratchet_session
-    except Exception as exc:
-        print(dim(f"[ratchet] unavailable: {exc}"))
-        return
-
-    print(dim("[ratchet] distilling session insights …"))
-    try:
-        provider = AnthropicProvider(api_key=cfg.api_key, cwd=cfg.cwd)
-        res = await ratchet_session(cfg.cwd, session_id, provider, cfg.model)
-    except Exception as exc:
-        print(dim(f"[ratchet] failed: {exc}"))
-        return
-
-    if res.error:
-        print(dim(f"[ratchet] {res.error}"))
-        return
-    if not res.wrote:
-        print(dim("[ratchet] nothing worth saving."))
-        return
-    print(green(f"[ratchet] saved insights → {res.output_path}"))
-    if verbose and res.insights_text:
-        print(dim(res.insights_text[:400]))
 
 
 # ── Single-prompt (non-interactive) mode ──────────────────────────────────────
@@ -526,17 +443,26 @@ def _run_sessions_subcommand(argv: list[str]) -> int:
 
 
 def main() -> None:
-    # Sub-command dispatch (no API key required for `sessions` / `wiki`).
+    # Sub-command dispatch (no API key required for `sessions`).
     if len(sys.argv) > 1 and sys.argv[1] == "sessions":
         sys.exit(_run_sessions_subcommand(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "wiki":
-        # Lazy import — wiki module is optional and self-contained.
-        try:
-            from .wiki.gather.cli import _main as _wiki_main
-        except ImportError:  # pragma: no cover
-            print(red("wiki subcommand not available (import failed)"), file=sys.stderr)
-            sys.exit(1)
-        sys.exit(_wiki_main(sys.argv[2:]))
+        # Deprecation shim (one release). The wiki was extracted to a skill
+        # at .claude/skills/agent-forge-wiki/ in agent-forge 1.1; the CLI
+        # subcommand goes away in 1.2.
+        print(
+            red("agent-forge wiki has moved to a skill."),
+            file=sys.stderr,
+        )
+        print(
+            dim(
+                "Run instead:\n"
+                "  python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py "
+                + " ".join(sys.argv[2:])
+            ),
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     import argparse
 
@@ -552,12 +478,6 @@ def main() -> None:
         "--debug-stream",
         action="store_true",
         help="Log raw provider stream events with monotonic timestamps to stderr (diagnostic).",
-    )
-    parser.add_argument(
-        "--ratchet",
-        action="store_true",
-        help="On graceful exit, distill session insights into "
-             ".agent-forge/raw/notes/session/<sid>.md (one extra LLM call).",
     )
     args = parser.parse_args()
 
@@ -587,7 +507,6 @@ def main() -> None:
         verbose=args.verbose,
         continue_session=args.continue_session,
         resume_id=args.resume_id,
-        auto_ratchet=args.ratchet,
     )
 
     if args.prompt:
