@@ -142,6 +142,259 @@ def list_sessions() -> list[tuple[str, float]]:
     result.sort(key=lambda x: x[1], reverse=True)
     return result
 
+
+# ── Session metadata (lightweight read for listings & banners) ────────────────
+
+_TITLE_MAX_CHARS = 60
+
+
+@dataclass(frozen=True)
+class SessionMeta:
+    """Lightweight summary of a session for listings — derived from the JSONL.
+
+    No schema change required: title is computed by reading the first user
+    message in the log. cwd / model / started_ts come from the metadata entry.
+    """
+    session_id: str
+    cwd: str
+    model: str
+    started_ts: int          # ms since epoch (from metadata entry)
+    last_modified: float     # filesystem mtime (seconds since epoch)
+    title: str               # first user-message text, truncated; "" if none yet
+
+
+def _extract_title(content: object) -> str:
+    """Pick a one-liner title from a UserMessage's serialised content."""
+    text = ""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        for blk in content:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                text = blk.get("text", "")
+                if text:
+                    break
+    text = " ".join(text.split())  # collapse whitespace / newlines
+    if len(text) > _TITLE_MAX_CHARS:
+        text = text[: _TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def read_session_meta(session_id: str) -> SessionMeta | None:
+    """Read just enough of a session's JSONL to summarise it.
+
+    Reads the first metadata entry (always line 1 by convention) and scans
+    forward for the first user message to derive the title. Returns None if
+    the file is missing or the metadata header can't be parsed.
+    """
+    path = _session_path(session_id)
+    if not path.exists():
+        return None
+    cwd = ""
+    model = ""
+    started_ts = 0
+    title = ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                etype = entry.get("type")
+                if etype == "metadata" and not cwd:
+                    cwd = entry.get("cwd", "")
+                    model = entry.get("model", "")
+                    started_ts = entry.get("ts", 0)
+                elif etype == "message" and not title:
+                    msg = entry.get("message", {})
+                    if msg.get("role") == "user":
+                        title = _extract_title(msg.get("content", ""))
+                if cwd and title:
+                    break
+    except OSError:
+        return None
+    if not cwd:
+        # No metadata entry — treat as unreadable rather than guess.
+        return None
+    return SessionMeta(
+        session_id=session_id,
+        cwd=cwd,
+        model=model,
+        started_ts=started_ts,
+        last_modified=path.stat().st_mtime,
+        title=title,
+    )
+
+
+def list_sessions_for_cwd(cwd: str) -> list[SessionMeta]:
+    """All sessions whose metadata.cwd matches `cwd`, newest first."""
+    metas: list[SessionMeta] = []
+    for sid, _mtime in list_sessions():
+        meta = read_session_meta(sid)
+        if meta is not None and meta.cwd == cwd:
+            metas.append(meta)
+    return metas
+
+
+def resolve_session_spec(spec: str, cwd: str) -> str | None:
+    """Resolve a user-supplied session reference to a full session id.
+
+    Accepts:
+      - A 1-based decimal index into `list_sessions_for_cwd(cwd)` (e.g. "2").
+      - A unique session-id prefix (any length ≥ 4), matched across all
+        sessions on disk (not just the current cwd).
+      - A full session id.
+
+    Returns None if nothing matches, or if a prefix matches more than one
+    session (ambiguous).
+    """
+    spec = spec.strip()
+    if not spec:
+        return None
+
+    # Numeric index → cwd-scoped listing
+    if spec.isdigit():
+        i = int(spec)
+        metas = list_sessions_for_cwd(cwd)
+        if 1 <= i <= len(metas):
+            return metas[i - 1].session_id
+        return None
+
+    # Prefix / full id → match across all sessions
+    if len(spec) < 4:
+        return None
+    matches = [sid for sid, _ in list_sessions() if sid.startswith(spec)]
+    if len(matches) == 1:
+        return matches[0]
+    return None  # 0 or >1 → caller treats as not-found / ambiguous
+
+
+# ── Markdown transcript rendering (for `sessions show`) ──────────────────────
+
+def _content_to_text(content: object) -> str:
+    """Best-effort flatten of a serialised message `content` field to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for blk in content:
+            if not isinstance(blk, dict):
+                continue
+            t = blk.get("type")
+            if t == "text":
+                parts.append(blk.get("text", ""))
+            elif t == "image":
+                mt = blk.get("media_type", "image")
+                parts.append(f"_[image: {mt}]_")
+        return "\n".join(p for p in parts if p)
+    return ""
+
+
+def render_session_markdown(session_id: str) -> str | None:
+    """Render a session JSONL as a human-readable markdown transcript.
+
+    Returns None if the session file is missing or has no metadata header.
+    Pure function — does not touch terminal / colours / files outside the
+    target session log.
+    """
+    import datetime as _dt
+
+    path = _session_path(session_id)
+    if not path.exists():
+        return None
+
+    entries: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    meta_entry = next((e for e in entries if e.get("type") == "metadata"), None)
+    if meta_entry is None:
+        return None
+
+    started = meta_entry.get("ts", 0) / 1000.0
+    started_str = (
+        _dt.datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S")
+        if started else "unknown"
+    )
+    title = ""
+    for e in entries:
+        if e.get("type") == "message" and e.get("message", {}).get("role") == "user":
+            title = _extract_title(e["message"].get("content", ""))
+            break
+
+    out: list[str] = []
+    out.append(f"# {title or '(untitled session)'}")
+    out.append("")
+    out.append(f"- **Session ID:** `{session_id}`")
+    out.append(f"- **Model:** {meta_entry.get('model', '?')}")
+    out.append(f"- **CWD:** `{meta_entry.get('cwd', '?')}`")
+    out.append(f"- **Started:** {started_str}")
+    out.append("")
+    out.append("---")
+    out.append("")
+
+    msg_count = 0
+    for e in entries:
+        etype = e.get("type")
+        if etype == "compaction":
+            tb, ta = e.get("tokens_before", 0), e.get("tokens_after", 0)
+            out.append(f"### _compaction (tokens {tb} → {ta})_")
+            out.append("")
+            summary = e.get("summary", "").strip()
+            if summary:
+                out.append(f"> {summary}")
+                out.append("")
+            continue
+        if etype != "message":
+            continue
+        msg_count += 1
+        m = e.get("message", {})
+        role = m.get("role", "")
+        if role == "user":
+            text = _content_to_text(m.get("content", ""))
+            out.append("## User")
+            out.append("")
+            out.append(text or "_(empty)_")
+        elif role == "assistant":
+            out.append("## Assistant")
+            out.append("")
+            for blk in m.get("content", []):
+                bt = blk.get("type")
+                if bt == "text":
+                    out.append(blk.get("text", ""))
+                elif bt == "thinking":
+                    thinking = (blk.get("thinking") or "").strip()
+                    if thinking:
+                        out.append(f"<details><summary>thinking</summary>\n\n{thinking}\n\n</details>")
+                elif bt == "tool_use":
+                    name = blk.get("name", "?")
+                    args = json.dumps(blk.get("arguments", {}), ensure_ascii=False)
+                    out.append(f"`tool: {name}` `{args}`")
+        elif role == "tool_result":
+            text = _content_to_text(m.get("content", ""))
+            err = " (error)" if m.get("is_error") else ""
+            out.append(f"### Tool result{err}")
+            out.append("")
+            # Fence to keep terminal output legible
+            out.append("```")
+            out.append(text if len(text) <= 4000 else text[:4000] + "\n…(truncated)")
+            out.append("```")
+        out.append("")
+
+    out.append(f"_{msg_count} messages_")
+    return "\n".join(out)
+
 def latest_session_id(cwd: str) -> str | None:
     """Find the most recent session that was started in cwd.
 

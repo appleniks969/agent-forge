@@ -43,7 +43,9 @@ from .renderer import dim, bold, green, red, yellow, render_event, print_footer
 from .runtime import AgentRuntime
 from .session import (
     append_message, append_metadata, latest_session_id,
-    new_id, resume_session, update_memory,
+    list_sessions_for_cwd, new_id, read_session_meta,
+    render_session_markdown, resolve_session_spec, resume_session,
+    update_memory,
 )
 from .tools import default_registry
 
@@ -97,6 +99,21 @@ def _expand_pastes(text: str, store: dict[int, str]) -> str:
     return _PASTE_RE.sub(_sub, text)
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _format_age(ts_seconds: float) -> str:
+    """Human-friendly age: '3h ago', '2d ago', 'just now'."""
+    import time as _t
+    delta = max(0, _t.time() - ts_seconds)
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
 # ── Chat session ──────────────────────────────────────────────────────────────
 
 async def run_chat(cfg: ChatConfig) -> None:
@@ -113,7 +130,13 @@ async def run_chat(cfg: ChatConfig) -> None:
         resumed = resume_session(target)
         session_id = resumed.session_id
         messages = resumed.messages
-        print(green(f"[Session resumed: {session_id[:8]}… {len(messages)} messages]"))
+        meta = read_session_meta(session_id)
+        title = (meta.title if meta and meta.title else "(untitled)")
+        age = _format_age(meta.last_modified) if meta else "?"
+        print(green(
+            f"[Resumed] \"{title}\" · {len(messages)} messages · "
+            f"{age} · {session_id[:8]}…"
+        ))
     else:
         session_id = new_id()
         append_metadata(session_id, cfg.model.id, cfg.cwd)
@@ -192,6 +215,54 @@ async def run_chat(cfg: ChatConfig) -> None:
                     print(green(f"[memory] Saved: {note[:60]}…" if len(note) > 60 else f"[memory] Saved: {note}"))
                 except Exception as exc:
                     print(red(f"[memory] Save failed: {exc}"))
+            continue
+        if user_input == "/sessions":
+            metas = list_sessions_for_cwd(cfg.cwd)
+            if not metas:
+                print(dim("No sessions for this cwd yet."))
+                continue
+            print(bold("Sessions in this directory (newest first):"))
+            for i, m in enumerate(metas[:20], start=1):
+                marker = " ← current" if m.session_id == session_id else ""
+                title = m.title or dim("(untitled)")
+                age = _format_age(m.last_modified)
+                # 2-col layout: idx + title + age + sid prefix
+                print(f"  {i:>2}  {title:<60}  {age:<10}  {dim(m.session_id[:8])}{marker}")
+            print(dim("  Switch to one:  /resume <n|id>"))
+            continue
+        if user_input.startswith("/resume"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2:
+                print(red("Usage: /resume <n|id>   (see /sessions for the list)"))
+                continue
+            target = resolve_session_spec(parts[1], cfg.cwd)
+            if target is None:
+                print(red(f"No session matches '{parts[1]}'. Try /sessions to see options."))
+                continue
+            if target == session_id:
+                print(dim("Already on that session."))
+                continue
+            resumed = resume_session(target)
+            # Swap state in place — keep the `messages` list reference stable.
+            messages.clear()
+            messages.extend(resumed.messages)
+            session_id = target
+            runtime.clear()
+            if messages:
+                runtime.init_messages(messages)
+            # Reset toolbar / footer counters for the new session.
+            session_cost = 0.0
+            session_turns = 0
+            session_ctx_pct = 0.0
+            session_cache_read = 0
+            session_cache_write = 0
+            meta = read_session_meta(session_id)
+            title = (meta.title if meta and meta.title else "(untitled)")
+            age = _format_age(meta.last_modified) if meta else "?"
+            print(green(
+                f"[Switched] \"{title}\" · {len(messages)} messages · "
+                f"{age} · {session_id[:8]}…"
+            ))
             continue
         if user_input == "/clear":
             messages.clear()
@@ -299,7 +370,68 @@ async def _run_single_prompt(cfg: ChatConfig, prompt: str) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _run_sessions_subcommand(argv: list[str]) -> int:
+    """`agent-forge sessions ls [--all]` — list persisted sessions.
+
+    No API key required. Reads JSONL log files only. Returns process exit code.
+    """
+    import argparse
+
+    p = argparse.ArgumentParser(prog="agent-forge sessions")
+    sub = p.add_subparsers(dest="action", required=True)
+    ls = sub.add_parser("ls", help="List sessions")
+    ls.add_argument("--all", action="store_true", help="All cwds, not just the current one")
+    ls.add_argument("--cwd", default=os.getcwd())
+    show = sub.add_parser("show", help="Print a session as a markdown transcript")
+    show.add_argument("spec", help="Session: 1-based index in current cwd, or sid prefix")
+    show.add_argument("--cwd", default=os.getcwd())
+    args = p.parse_args(argv)
+
+    if args.action == "ls":
+        if args.all:
+            from .session import list_sessions
+            metas = []
+            for sid, _ in list_sessions():
+                m = read_session_meta(sid)
+                if m is not None:
+                    metas.append(m)
+        else:
+            metas = list_sessions_for_cwd(args.cwd)
+
+        if not metas:
+            scope = "any cwd" if args.all else args.cwd
+            print(dim(f"No sessions found for {scope}."))
+            return 0
+
+        print(bold(f"{'#':>3}  {'TITLE':<60}  {'AGE':<10}  {'ID':<10}  CWD"))
+        for i, m in enumerate(metas[:50], start=1):
+            title = m.title or "(untitled)"
+            age = _format_age(m.last_modified)
+            cwd_disp = m.cwd if args.all else ""
+            print(f"{i:>3}  {title:<60}  {age:<10}  {m.session_id[:8]:<10}  {cwd_disp}")
+        return 0
+
+    if args.action == "show":
+        sid = resolve_session_spec(args.spec, args.cwd)
+        if sid is None:
+            print(red(f"No session matches '{args.spec}'. Try `agent-forge sessions ls`."), file=sys.stderr)
+            return 1
+        md = render_session_markdown(sid)
+        if md is None:
+            print(red(f"Session {sid} could not be read."), file=sys.stderr)
+            return 1
+        print(md)
+        return 0
+
+    p.error(f"unknown action: {args.action}")
+    return 2  # unreachable; keeps mypy happy
+
+
 def main() -> None:
+    # Sub-command dispatch (no API key required for `sessions`).
+    if len(sys.argv) > 1 and sys.argv[1] == "sessions":
+        sys.exit(_run_sessions_subcommand(sys.argv[2:]))
+
     import argparse
 
     parser = argparse.ArgumentParser(prog="agent-forge", description="Minimal coding agent")
