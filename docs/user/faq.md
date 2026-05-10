@@ -13,9 +13,6 @@ Available inside the interactive REPL:
 | `/remember <text>` | Save `<text>` to project `memory.md` so it persists across sessions |
 | `/sessions` | List recent sessions for the current working directory |
 | `/resume <n\|id>` | Switch to another session by index (from `/sessions`) or ID prefix |
-| `/ratchet` | Manually distil the current session into `.agent-forge/raw/notes/session/<sid>.md` (one LLM call). Auto-runs on `/quit` only when started with `--ratchet`. |
-| `/wiki` | Print wiki health: citations, overrides, stale areas, top sources |
-| `/wrong <text>` | Log a correction — "the wiki / agent got X wrong, actually Y" — to `.agent-forge/metrics/overrides.jsonl` |
 
 > **Tip:** `Ctrl-C` interrupts a running agent turn. `Ctrl-D` (or `/quit`) exits cleanly.
 
@@ -86,7 +83,7 @@ rm .agent-forge/memory.md       # project memory
 rm ~/.agent-forge/memory.md     # global memory
 ```
 
-For wiki state, delete `.agent-forge/raw/` (loses gathered signal) or the whole `.agent-forge/` (full reset). See [Configuration → Memory](configuration.md#memory).
+For wiki-skill state, delete `.agent-forge/raw/` (loses gathered signal) or the whole `.agent-forge/` (full reset). See [Configuration → Memory](configuration.md#memory).
 
 ### How do I switch projects?
 
@@ -96,7 +93,7 @@ For wiki state, delete `.agent-forge/raw/` (loses gathered signal) or the whole 
 agent-forge --cwd ~/projects/other-app
 ```
 
-`memory.md`, sessions, and the wiki are **per-project** — each working directory has its own state.
+`memory.md`, sessions, and the wiki-skill state under `.agent-forge/` are **per-project** — each working directory has its own state.
 
 ### Can I use agent-forge on a private repo?
 

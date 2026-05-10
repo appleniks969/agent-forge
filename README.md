@@ -45,15 +45,18 @@ agent-forge                                   # interactive REPL
 agent-forge --prompt "fix the failing tests"  # one-shot, exits when done
 ```
 
-Optional but recommended — set up the per-repo wiki (~30 seconds):
+Optional — the **agent-forge-wiki skill** indexes your repo's history (commits,
+PRs, hotspots, code markers, notes) into schema'd bundles and LLM-compiled
+narrative pages. It ships in this repo at `.claude/skills/agent-forge-wiki/`,
+auto-discovered by Claude Code agents working here.
 
 ```bash
-agent-forge wiki init     # auto-detect areas → contexts.yaml
-agent-forge wiki gather   # pull repo signal into .agent-forge/raw/
-agent-forge               # WIKI section is now auto-injected each turn
+# Run directly (gather → derive → compile):
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py gather --since 2026-02-10
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py compile
 ```
 
-See the [Wiki](#wiki--repository-knowledge) section below for the full workflow.
+See the [Wiki skill](#wiki-skill) section below.
 
 ---
 
@@ -70,34 +73,42 @@ The agent has six built-in tools — `Bash`, `Read`, `Write`, `Edit`, `Grep`, `F
 
 ---
 
-## Wiki — Repository Knowledge
+## Wiki skill
 
-A per-repo knowledge system that compounds over time. agent-forge gathers
-signal from your codebase (commits, PRs, hotspots, code markers, hand-written
-notes), optionally synthesises it via an LLM, and **auto-injects it into the
-system prompt** on every chat turn. The agent shows up to a new repo already
-knowing where the hot files are, what the recent bug fixes were, and what you
-wrote down last week.
+A per-repo knowledge system that compounds over time. It gathers signal from
+your codebase (commits, PRs, hotspots, code markers, hand-written notes),
+optionally synthesises it via an LLM, and surfaces it to agents on demand.
 
-All state lives under `.agent-forge/` in the target repo (gitignore it).
-The wiki subsystem is **optional** — every chat turn works without it; if
-`.agent-forge/raw/` is empty, no WIKI section is added to the prompt.
+**The wiki is no longer part of agent-forge proper.** It now ships as a
+self-contained skill at `.claude/skills/agent-forge-wiki/`, discoverable by
+Claude Code agents (and any other skill-aware host) via SKILL.md frontmatter.
+This repo includes the skill in-tree; other repos can copy the directory.
 
-### Minimum viable usage (~30 seconds)
+State lives under `.agent-forge/` in the target repo (gitignore it).
+
+### Minimum viable usage
 
 ```bash
 cd ~/your-repo
-agent-forge wiki init         # auto-detect packages/* or src/* → contexts.yaml
-agent-forge wiki gather       # pull repo signal into .agent-forge/raw/
-agent-forge                   # chat as usual — WIKI section is auto-injected
+
+# First-time area detection (writes .agent-forge/contexts.yaml)
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py init
+
+# Pull repo signal into .agent-forge/raw/
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py gather --since 2026-02-10
+
+# Synthesise narrative cards (LLM call; writes .agent-forge/curated/*.md)
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py compile
+
+# Open Claude Code (or any skill-aware agent); the wiki skill is auto-discovered.
+agent-forge
 ```
 
-That's the whole flow for "give me value today." Subsequent `wiki gather`
-runs are incremental (the cursor in `.agent-forge/raw/cache/.cursor` advances).
+Subsequent `gather` runs are incremental (the cursor in
+`.agent-forge/raw/cache/.cursor` advances).
 
-`wiki init` inspects the repo for `packages/*/`, `apps/*/`, `services/*/`,
-`src/*/`, or top-level dirs and writes a starter `contexts.yaml`. Edit it
-freely — paths use glob syntax (`**` matches recursively):
+Edit `.agent-forge/contexts.yaml` freely — paths use glob syntax (`**`
+matches recursively):
 
 ```yaml
 areas:
@@ -113,63 +124,32 @@ areas:
 Without `contexts.yaml`, everything still works — hot files just appear as
 one flat list instead of grouped by area.
 
-### Optional: drop hand-written notes anytime
+### Drop hand-written notes anytime
 
 ```bash
 echo "# Why webhooks retry 3x not 5x" > .agent-forge/raw/notes/webhook-retries.md
 ```
 
-The next gather (or chat session — `present` reads notes directly) picks them up.
+The next compile picks them up.
 
-### The seven stages
+### The six stages
 
-Each is a peer subpackage of `agent_forge/wiki/` with a uniform shape
-(`__init__.py` + `runner.py`). LLM-using stages are explicit CLI verbs;
-nothing happens behind your back unless you opt in with `--ratchet`.
+Each is a peer subpackage of `.claude/skills/agent-forge-wiki/scripts/wiki/`
+with a uniform shape (`__init__.py` + `runner.py`).
 
 | Stage | Trigger | LLM? | Output |
 |---|---|---|---|
-| **init** | `agent-forge wiki init` (one-time) | no | `.agent-forge/contexts.yaml` (auto-detected areas) |
-| **gather** | `agent-forge wiki gather` (weekly) | no | `.agent-forge/raw/cache/*.json` |
-| **compile** | `agent-forge wiki compile` (monthly) | yes | `.agent-forge/curated/*.md` |
-| **present** | every chat turn (auto) | no | WIKI system-prompt section (per-area when `contexts.yaml` exists) |
-| **ratchet** | `/ratchet`, `--ratchet`, or `wiki ratchet --session ID` | yes | `raw/notes/session/<sid>.md` |
-| **compact** | `agent-forge wiki compact` (quarterly) | yes | rewrites `curated/*.md` |
-| **maintain** | `agent-forge wiki maintain` (weekly) | no | re-gathers stale areas |
-| **metrics** | every chat turn (auto) + `/wrong` | no | `.agent-forge/metrics/*.jsonl` |
+| **init** | `cli.py init` (one-time) | no | `.agent-forge/contexts.yaml` |
+| **gather** | `cli.py gather` (weekly) | no | `.agent-forge/raw/cache/*.json` |
+| **compile** | `cli.py compile` (monthly) | yes | `.agent-forge/curated/*.md` |
+| **present** | called by build_wiki_section() | no | markdown manifest string |
+| **compact** | `cli.py compact` (quarterly) | yes | rewrites `curated/*.md` |
+| **maintain** | `cli.py maintain` (weekly) | no | re-gathers stale areas |
+| **metrics** | called by record_citation/record_override | no | `.agent-forge/metrics/*.jsonl` |
 
-The `present` stage uses *section-aware skeleton extraction* on `AGENTS.md` /
-`CONTRIBUTING.md` / `README.md`: every `##` and `###` heading is preserved
-(plus a few bullets per section), so the agent sees the full structure of
-project rules even for very long files. A `_(skeleton — full file: AGENTS.md)_`
-marker tells the agent to read the file in full when it needs detail.
-
-### Workflow cheat sheet
-
-```bash
-# Day 0 — first touch
-agent-forge wiki init           # auto-detect areas → contexts.yaml
-agent-forge wiki gather         # pull signal into raw/
-
-# Daily — chat normally; opt into ratchet to remember sessions
-agent-forge --ratchet
-
-# Weekly — refresh raw signal, hot-area top-up
-agent-forge wiki gather
-agent-forge wiki maintain
-
-# Monthly — synthesise raw/ into narrative curated/ pages (LLM)
-agent-forge wiki compile
-
-# Quarterly — lint curated/ for staleness / contradictions (LLM)
-agent-forge wiki compact
-
-# Anytime — health check
-agent-forge wiki status        # CLI: counts of artifacts on disk
-# in the REPL:
-# /wiki                        # citation rate, override rate, stale areas
-# /wrong <correction>          # log an override when the wiki was wrong
-```
+(*Note: the `ratchet` stage and chat-time `/wiki`, `/wrong`, `--ratchet`
+integrations were removed when the wiki was extracted. The skill is
+invoked deliberately rather than auto-firing on chat events.*)
 
 ### Layout under `.agent-forge/`
 
@@ -179,19 +159,28 @@ agent-forge wiki status        # CLI: counts of artifacts on disk
 ├── raw/
 │   ├── cursor.json       last gather timestamp (incremental marker)
 │   ├── cache/            commits, PRs, hotspots, code markers, repo files
-│   └── notes/            hand-written + ratchet'd session insights
-├── curated/              LLM-synthesised narratives (created by `wiki compile`)
+│   └── notes/            hand-written notes
+├── curated/              LLM-synthesised narratives (created by `compile`)
 │   ├── onboarding.md
 │   ├── hotspots.md
 │   ├── adrs.md
 │   └── per_area/<area>.md
-├── skills/               optional prompt overrides for compile/ratchet/compact
+├── skills/               optional prompt overrides for compile/compact
 └── metrics/              citations.jsonl · overrides.jsonl · staleness.json
 ```
 
 Git-ignore the whole directory unless you want to commit curated knowledge
 for your team (which is a perfectly good workflow — the markdown is
 hand-readable and reviewable).
+
+### Skill architecture reference
+
+For the full pipeline shape, schema contracts, and policies, see
+[.claude/skills/agent-forge-wiki/references/ARCHITECTURE.md](.claude/skills/agent-forge-wiki/references/ARCHITECTURE.md)
+(to be ported from the prior in-tree AGENTS.md in a follow-up commit).
+
+The decision to extract the wiki is recorded in
+[docs/adr/ADR-005-wiki-extracted-as-skill.md](docs/adr/ADR-005-wiki-extracted-as-skill.md).
 
 ---
 

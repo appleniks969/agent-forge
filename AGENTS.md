@@ -19,7 +19,7 @@
 > and slash commands live in `docs/user/` (single source of truth).
 
 A minimal Python coding agent: 19 flat modules + one optional subpackage
-(`wiki/` — see [Wiki Subsystem](#wiki-subsystem)), async-generator loop,
+(extracted as a Claude Code skill — see [Wiki — extracted as a skill](#wiki--extracted-as-a-skill)), async-generator loop,
 interactive REPL (`agent-forge`) and autonomous git-isolated pipeline
 (`AutonomousFlow`).
 
@@ -319,7 +319,7 @@ Run these after every change.
 # Install / reinstall the package in editable mode (uv)
 uv pip install -e .
 
-# Run the test suite (353 tests as of MVP-2 wiki + folder-per-stage refactor)
+# Run the test suite (~413 tests: 206 agent-forge core + 207 wiki skill)
 uv run pytest -q
 
 # Check imports
@@ -383,79 +383,27 @@ Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig
 
 ---
 
-## Wiki Subsystem
+## Wiki — extracted as a skill
 
-Optional, **composition-only** subpackage at `agent_forge/wiki/`. None of the
-17 core flat modules import from it. The two consumers are both composition
-roots and both **lazy-import** (so `import agent_forge` works with `wiki/`
-broken or absent):
+**The wiki is no longer part of agent-forge core.** It was extracted in
+ADR-005 to a self-contained Claude Code skill at
+`.claude/skills/agent-forge-wiki/`.
 
-- `prompts.py` → `wiki.present.build_wiki_section()` (per-turn, system-prompt seam)
-- `chat.py` → `wiki.metrics.record_override` (`/wrong`), `wiki.metrics.summarise`
-  (`/wiki`), `wiki.ratchet.ratchet_session` (`/ratchet`, auto on `/quit`
-  when `--ratchet`), `wiki.gather.cli._main` (`agent-forge wiki ...`)
+The agent-forge package has no imports from the wiki; the wiki has no
+required imports from agent-forge (it soft-deps on `agent_forge.{messages,
+models, provider}` for OAuth dispatch + retry, until that's replaced with
+a direct anthropic SDK call in a follow-up).
 
-### Folder shape (uniform across all 7 stages)
+For the wiki's internal architecture (six stages, schema'd bundles, change
+impact, dependency rules), see:
 
-Every stage is its own folder containing `__init__.py` (re-exports the public
-surface) + `runner.py` (± `bundle.py`, `cli.py`, `discovery.py`, `builtin/`).
-This is enforced — promoting one stage to a folder and leaving others flat
-is a smell; pick the convention and stay consistent. See the `present/`,
-`maintain/`, `metrics/` folders for the minimal-shape template.
+- `.claude/skills/agent-forge-wiki/SKILL.md` — entry point, when to invoke
+- `.claude/skills/agent-forge-wiki/scripts/wiki/` — the implementation
+- `.claude/skills/agent-forge-wiki/tests/` — wiki tests (run with pytest)
+- `docs/adr/ADR-005-wiki-extracted-as-skill.md` — the decision
 
-```
-agent_forge/wiki/
-├── __init__.py             re-exports the wiki public surface
-├── _llm.py                 shared: stream-and-collect helper around any LLMProvider
-├── types.py                shared: Artifact, Source, Gatherer, GatherResult
-├── storage.py              shared: all .agent-forge/ path + read/write helpers
-│
-├── gather/                 stage 1 — pull repo signal into raw/ (no LLM)
-│   ├── cli.py               argparse for `agent-forge wiki <verb>` (mounts ALL verbs)
-│   ├── discovery.py         entry-point + builtin gatherer discovery
-│   └── builtin/             notes / repo_files / code_markers / git_history / prs / hotspots
-├── compile/                stage 2 — raw/ → curated/ via LLM
-│   ├── runner.py            compile_wiki(), DEFAULT_SKILL, _GLOBAL_OUTPUTS
-│   └── bundle.py            build_compile_bundle()
-├── present/                stage 3 — raw/curated/ → system-prompt section (no LLM)
-│   └── runner.py            build_wiki_section()
-├── ratchet/                stage 4 — session JSONL → raw/notes/session/ via LLM
-│   ├── runner.py            ratchet_session(), DEFAULT_SKILL, load_skill
-│   └── bundle.py            build_session_bundle()
-├── compact/                stage 5 — lint curated/ via LLM (anti-rot)
-│   └── runner.py            compact_wiki()
-├── maintain/               stage 6 — detect stale areas, re-gather (no LLM)
-│   └── runner.py            detect_stale_areas(), run_maintain(), MaintainResult
-└── metrics/                stage 7 — citation / override / staleness logs
-    └── runner.py            record_citation, record_override, snapshot_staleness, summarise
-```
-
-### Internal dependency rules
-
-- `types.py`, `storage.py`, `_llm.py` are **shared leaves** — every stage may import them
-- Stages **must not** import from each other except: `maintain/runner.py` may
-  call `gather.run_gather` (rationale: maintain *is* gather-with-area-filter)
-- LLM-using stages (`compile`, `ratchet`, `compact`) all use `_llm.run_llm()`
-  + a `DEFAULT_SKILL` constant + `load_skill()` for per-repo override at
-  `.agent-forge/skills/<stage>.md` — keep the convention when adding new
-  LLM stages
-- `gather/cli.py` is the single argparse mount point for **all** wiki verbs
-  (gather, status, compile, ratchet, compact, maintain) so users get one
-  uniform `agent-forge wiki ...` CLI; new verbs get added there, not in
-  per-stage CLI files
-
-### Change-impact (wiki internals)
-
-| Changed | Also update |
-|---|---|
-| `types.py` → `Artifact` / `Source` | `storage.py` (serialisers) · every gatherer in `gather/builtin/` · `compile/bundle.py` · `present/runner.py` · `tests/wiki/test_types.py` |
-| `storage.py` → directory layout | every stage `runner.py` (paths) · README "Layout under `.agent-forge/`" · `tests/wiki/test_storage.py` |
-| Add a new gatherer | new module under `gather/builtin/` · register in `gather/discovery.py` · add to `--only` help text in `gather/cli.py` · add `tests/wiki/test_builtin_<name>.py` |
-| Add a new wiki CLI verb | add `_handle_<verb>` + parser in `gather/cli.py:_add_action_subparsers()` · README "Wiki subcommand" · README "The seven stages" table |
-| Change the conventions skeleton (`_markdown_skeleton`) | `present/runner.py` (algorithm) · `tests/wiki/test_present.py:test_repo_file_skeleton_keeps_all_section_headers` (contract) · README "The seven stages" note about skeleton extraction |
-| Change `wiki init` area detection | `gather/cli.py:_detect_areas` · `_NEVER_AREAS` blacklist · `tests/wiki/test_cli.py` (`test_init_*` cases for packages/src/top-level) |
-| Add a new wiki slash command | add to `chat.py:run_chat()` dispatch · README "Slash Commands" table · `_status_text()` if it affects session state |
-| Promote a stage from one file to multi-file | follow the `compile/`-style template (`__init__.py` re-exports from `runner.py` + `bundle.py`); never go back to a flat `<stage>.py` (asymmetry confuses readers) |
+For end-user docs (how to gather, compile, contexts.yaml), see the
+**"Wiki skill"** section in [README.md](README.md).
 
 ---
 

@@ -4,7 +4,7 @@
 
 Start here if you want to **use** agent-forge.
 
-- [Getting started](user/getting-started.md) — install, first REPL session, wiki setup
+- [Getting started](user/getting-started.md) — install, first REPL session, wiki skill setup
 - [Configuration](user/configuration.md) — API keys, env vars, models, thinking modes, memory
 - [FAQ & troubleshooting](user/faq.md) — common issues, slash command reference
 

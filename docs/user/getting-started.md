@@ -1,6 +1,6 @@
 # Getting started
 
-Install agent-forge, run your first session, and set up the wiki — under 10 minutes.
+Install agent-forge, run your first session, and set up the wiki skill — under 10 minutes.
 
 ## Prerequisites
 
@@ -83,22 +83,36 @@ agent-forge --prompt "summarise the failing tests and suggest a fix"
 
 The agent runs, prints its final answer, and exits. No REPL.
 
-## Set up the wiki (recommended, ~30 seconds)
+## Set up the wiki skill (recommended)
 
-The wiki is a per-repo knowledge layer that gathers signal from your codebase (commits, PRs, hot files, hand-written notes) and **auto-injects it into every chat turn's system prompt**. The agent shows up to your repo already knowing what changed recently and where the hot files are.
+The **agent-forge-wiki skill** is a per-repo knowledge layer that gathers
+signal from your codebase (commits, PRs, hot files, hand-written notes)
+into schema'd bundles, and LLM-compiles narrative cards. The skill ships
+in this repo at `.claude/skills/agent-forge-wiki/` and is auto-discovered
+by Claude Code.
 
 ```bash
 cd ~/your-repo
-agent-forge wiki init     # auto-detects packages/* or src/* → contexts.yaml
-agent-forge wiki gather   # pulls repo signal into .agent-forge/raw/
-agent-forge               # chat as usual — WIKI section is now in the prompt
+
+# One-time area detection
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py init
+
+# Pull repo signal (incremental on subsequent runs)
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py gather --since 2026-02-10
+
+# Synthesise narrative cards (LLM call)
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py compile
+
+# Chat — agents discover the skill via SKILL.md
+agent-forge
 ```
 
-That's the whole minimum-viable flow. Subsequent `wiki gather` runs are incremental.
+The wiki is **optional** — every chat turn works without it.
 
-The wiki is **optional** — every chat turn works without it. If you skip this step, the agent just won't have the auto-injected repo context until you add it.
-
-For the full wiki workflow (compile, ratchet, compact, maintain), see the [Wiki section in the top-level README](../../README.md#wiki--repository-knowledge).
+For the full wiki workflow (compile, compact, maintain) and the skill's
+internal architecture, see the
+[Wiki section in the top-level README](../../README.md#wiki-skill).
+Decision rationale: [ADR-005](../adr/ADR-005-wiki-extracted-as-skill.md).
 
 ## What's next
 
