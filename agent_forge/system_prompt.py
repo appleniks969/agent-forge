@@ -34,24 +34,30 @@ class SectionName(enum.StrEnum):
     AGENTS_DOC  = "agents_doc"   # group 1 (SESSION-STABLE)
     SKILLS      = "skills"       # group 1
     MEMORY      = "memory"       # group 1
+    WIKI        = "wiki"         # group 1 (SESSION-STABLE — changes only when `wiki gather` runs)
     REPO_MAP    = "repo_map"     # group 2 (SESSION-STABLE, separate breakpoint)
     ENVIRONMENT = "environment"  # group 3 (VOLATILE)
     CUSTOM      = "custom"       # group 3
 
     @property
     def order(self) -> int:
-        """Stable rendering position of this section in the final prompt (0…8)."""
+        """Stable rendering position of this section in the final prompt (0…9).
+
+        WIKI sits between MEMORY and REPO_MAP — after authored knowledge
+        (AGENTS.md, /remember memory) but before the mechanical repo file
+        listing, so the LLM sees "why" before "what files exist".
+        """
         return {
             "identity": 0, "tools": 1, "guidelines": 2,
-            "agents_doc": 3, "skills": 4, "memory": 5,
-            "repo_map": 6, "environment": 7, "custom": 8,
+            "agents_doc": 3, "skills": 4, "memory": 5, "wiki": 6,
+            "repo_map": 7, "environment": 8, "custom": 9,
         }[self.value]
 
     @property
     def cache_group(self) -> int:
         """Anthropic cache group: 0 (stable), 1 (session-stable), 2 (repo_map), 3 (volatile, never cached)."""
         if self in (SectionName.IDENTITY, SectionName.TOOLS, SectionName.GUIDELINES): return 0
-        if self in (SectionName.AGENTS_DOC, SectionName.SKILLS, SectionName.MEMORY): return 1
+        if self in (SectionName.AGENTS_DOC, SectionName.SKILLS, SectionName.MEMORY, SectionName.WIKI): return 1
         if self == SectionName.REPO_MAP: return 2
         return 3  # VOLATILE
 
@@ -164,7 +170,7 @@ class SystemPrompt:
 
     def invalidate_session(self) -> None:
         """Invalidate session-stable sections (groups 1+2). Called on /clear."""
-        session_groups = {SectionName.AGENTS_DOC, SectionName.SKILLS, SectionName.MEMORY, SectionName.REPO_MAP}
+        session_groups = {SectionName.AGENTS_DOC, SectionName.SKILLS, SectionName.MEMORY, SectionName.WIKI, SectionName.REPO_MAP}
         for name, sec in self._sections.items():
             if name in session_groups:
                 sec.invalidate()

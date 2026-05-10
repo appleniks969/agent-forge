@@ -38,6 +38,11 @@ htmlcov/
 sessions/
 *.session.json
 
+# Local-only sandboxes / scratch
+.claude/worktrees/
+.agent-flow/
+scratch/
+
 # Generated API docs (rebuild via scripts/build_api_docs.sh)
 docs/api/
 

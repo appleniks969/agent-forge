@@ -2,20 +2,26 @@
 
 > **Who this file is for.** `AGENTS.md` is the architectural reference for
 > contributors and AI coding assistants (Claude Code, Cursor, etc.) **modifying
-> this codebase**. It complements — does not replace — `README.md`.
+> this codebase**. It complements — does not replace — the user docs.
 >
 > | Question | File |
 > |---|---|
-> | "How do I install / run / configure agent-forge?" | **README.md** |
+> | "How do I install and run agent-forge?" | **[docs/user/getting-started.md](docs/user/getting-started.md)** |
+> | "How do I configure auth, models, thinking modes?" | **[docs/user/configuration.md](docs/user/configuration.md)** |
+> | "What does this slash command do? / I hit an error" | **[docs/user/faq.md](docs/user/faq.md)** |
+> | "How do I use the wiki or autonomous mode?" | **[README.md](README.md)** |
 > | "If I change X, what else breaks?" | **AGENTS.md** (this file) |
 > | "Where is symbol Y defined?" | **AGENTS.md** → Concept Index |
 > | "What conventions does the code follow?" | **AGENTS.md** → Python Conventions |
 > | "What invariants must I preserve?" | **AGENTS.md** → Policies |
 >
-> The two files have ~no content overlap by design. CLI flags, slash commands,
-> installation, and model catalog live in README only.
+> The user docs and AGENTS.md have ~no content overlap by design. CLI flags
+> and slash commands live in `docs/user/` (single source of truth).
 
-A minimal Python coding agent: 17 flat modules, async-generator loop, interactive REPL (`agent-forge`) and autonomous git-isolated pipeline (`AutonomousFlow`).
+A minimal Python coding agent: 19 flat modules + one optional subpackage
+(`wiki/` — see [Wiki Subsystem](#wiki-subsystem)), async-generator loop,
+interactive REPL (`agent-forge`) and autonomous git-isolated pipeline
+(`AutonomousFlow`).
 
 ---
 
@@ -313,7 +319,7 @@ Run these after every change.
 # Install / reinstall the package in editable mode (uv)
 uv pip install -e .
 
-# Run the test suite (~197 tests as of phases 3-7)
+# Run the test suite (353 tests as of MVP-2 wiki + folder-per-stage refactor)
 uv run pytest -q
 
 # Check imports
@@ -327,19 +333,18 @@ agent-forge --help
 
 ## CLI Flags & Slash Commands
 
-User-facing reference lives in **README.md** (§ CLI Reference, § Slash Commands).
-This file does not duplicate it — see README to keep one source of truth.
+User-facing reference lives in **[docs/user/configuration.md](docs/user/configuration.md)** (CLI flags) and **[docs/user/faq.md](docs/user/faq.md)** (slash commands). This file does not duplicate them — see the user docs to keep one source of truth.
 
 Internal contract for contributors:
 
 - `argparse` choices for `--thinking` are defined in `chat.py:_parse_args()`.
-  When you add a new level, also update README's CLI Reference and the
-  Thinking Mode table.
+  When you add a new level, also update `docs/user/configuration.md` (CLI
+  flags reference + Thinking modes table).
 - Slash commands are dispatched in `chat.py:run_chat()`. New slash commands
-  must (a) appear in the README's Slash Commands table and (b) update
-  `_status_text()` if they affect session state.
+  must (a) appear in the slash-command table in `docs/user/faq.md` and
+  (b) update `_status_text()` if they affect session state.
 
-Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig(...))` — no CLI flag yet.
+Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig(...))` — no CLI flag yet. See [README.md](README.md) for the Python API.
 
 ---
 
@@ -378,16 +383,166 @@ Autonomous mode is invoked programmatically via `run_autonomous(AutonomousConfig
 
 ---
 
+## Wiki Subsystem
+
+Optional, **composition-only** subpackage at `agent_forge/wiki/`. None of the
+17 core flat modules import from it. The two consumers are both composition
+roots and both **lazy-import** (so `import agent_forge` works with `wiki/`
+broken or absent):
+
+- `prompts.py` → `wiki.present.build_wiki_section()` (per-turn, system-prompt seam)
+- `chat.py` → `wiki.metrics.record_override` (`/wrong`), `wiki.metrics.summarise`
+  (`/wiki`), `wiki.ratchet.ratchet_session` (`/ratchet`, auto on `/quit`
+  when `--ratchet`), `wiki.gather.cli._main` (`agent-forge wiki ...`)
+
+### Folder shape (uniform across all 7 stages)
+
+Every stage is its own folder containing `__init__.py` (re-exports the public
+surface) + `runner.py` (± `bundle.py`, `cli.py`, `discovery.py`, `builtin/`).
+This is enforced — promoting one stage to a folder and leaving others flat
+is a smell; pick the convention and stay consistent. See the `present/`,
+`maintain/`, `metrics/` folders for the minimal-shape template.
+
+```
+agent_forge/wiki/
+├── __init__.py             re-exports the wiki public surface
+├── _llm.py                 shared: stream-and-collect helper around any LLMProvider
+├── types.py                shared: Artifact, Source, Gatherer, GatherResult
+├── storage.py              shared: all .agent-forge/ path + read/write helpers
+│
+├── gather/                 stage 1 — pull repo signal into raw/ (no LLM)
+│   ├── cli.py               argparse for `agent-forge wiki <verb>` (mounts ALL verbs)
+│   ├── discovery.py         entry-point + builtin gatherer discovery
+│   └── builtin/             notes / repo_files / code_markers / git_history / prs / hotspots
+├── compile/                stage 2 — raw/ → curated/ via LLM
+│   ├── runner.py            compile_wiki(), DEFAULT_SKILL, _GLOBAL_OUTPUTS
+│   └── bundle.py            build_compile_bundle()
+├── present/                stage 3 — raw/curated/ → system-prompt section (no LLM)
+│   └── runner.py            build_wiki_section()
+├── ratchet/                stage 4 — session JSONL → raw/notes/session/ via LLM
+│   ├── runner.py            ratchet_session(), DEFAULT_SKILL, load_skill
+│   └── bundle.py            build_session_bundle()
+├── compact/                stage 5 — lint curated/ via LLM (anti-rot)
+│   └── runner.py            compact_wiki()
+├── maintain/               stage 6 — detect stale areas, re-gather (no LLM)
+│   └── runner.py            detect_stale_areas(), run_maintain(), MaintainResult
+└── metrics/                stage 7 — citation / override / staleness logs
+    └── runner.py            record_citation, record_override, snapshot_staleness, summarise
+```
+
+### Internal dependency rules
+
+- `types.py`, `storage.py`, `_llm.py` are **shared leaves** — every stage may import them
+- Stages **must not** import from each other except: `maintain/runner.py` may
+  call `gather.run_gather` (rationale: maintain *is* gather-with-area-filter)
+- LLM-using stages (`compile`, `ratchet`, `compact`) all use `_llm.run_llm()`
+  + a `DEFAULT_SKILL` constant + `load_skill()` for per-repo override at
+  `.agent-forge/skills/<stage>.md` — keep the convention when adding new
+  LLM stages
+- `gather/cli.py` is the single argparse mount point for **all** wiki verbs
+  (gather, status, compile, ratchet, compact, maintain) so users get one
+  uniform `agent-forge wiki ...` CLI; new verbs get added there, not in
+  per-stage CLI files
+
+### Change-impact (wiki internals)
+
+| Changed | Also update |
+|---|---|
+| `types.py` → `Artifact` / `Source` | `storage.py` (serialisers) · every gatherer in `gather/builtin/` · `compile/bundle.py` · `present/runner.py` · `tests/wiki/test_types.py` |
+| `storage.py` → directory layout | every stage `runner.py` (paths) · README "Layout under `.agent-forge/`" · `tests/wiki/test_storage.py` |
+| Add a new gatherer | new module under `gather/builtin/` · register in `gather/discovery.py` · add to `--only` help text in `gather/cli.py` · add `tests/wiki/test_builtin_<name>.py` |
+| Add a new wiki CLI verb | add `_handle_<verb>` + parser in `gather/cli.py:_add_action_subparsers()` · README "Wiki subcommand" · README "The seven stages" table |
+| Change the conventions skeleton (`_markdown_skeleton`) | `present/runner.py` (algorithm) · `tests/wiki/test_present.py:test_repo_file_skeleton_keeps_all_section_headers` (contract) · README "The seven stages" note about skeleton extraction |
+| Change `wiki init` area detection | `gather/cli.py:_detect_areas` · `_NEVER_AREAS` blacklist · `tests/wiki/test_cli.py` (`test_init_*` cases for packages/src/top-level) |
+| Add a new wiki slash command | add to `chat.py:run_chat()` dispatch · README "Slash Commands" table · `_status_text()` if it affects session state |
+| Promote a stage from one file to multi-file | follow the `compile/`-style template (`__init__.py` re-exports from `runner.py` + `bundle.py`); never go back to a flat `<stage>.py` (asymmetry confuses readers) |
+
+---
+
 ## Reference Documents
 
 | Document | When to read it |
 |---|---|
 | `pyproject.toml` | Dependency versions, entry-point wiring, dev-tool config |
-| `docs/adr/ADR-001-agent-runtime.md` | Why `AgentRuntime` exists (RC2: pressure management was REPL-only before) |
-| `docs/adr/ADR-002-provider-as-protocol.md` | Why `LLMProvider` is a Protocol and the SDK is an optional extra (RC1) |
-| `docs/adr/ADR-003-cache-control-is-a-hint.md` | Why `cache_control` is provider-advisory (RC5) |
 | `docs/CHANGELOG.md` | Per-phase change log (phases 0-7) |
 | `tests/fake_provider.py` | Reference implementation of `LLMProvider` for tests — copy this pattern when wiring a new provider |
 | `tests/test_runner.py` | Canonical examples of how to drive `agent_loop` from a test |
 | `tests/test_hooks.py` | Canonical examples of writing a custom `Hooks` subclass |
 | `tests/test_phase6.py` | Examples of `PathGuardHook`, `EditTool` overlap detection, session index tests |
+
+---
+
+## Worked Examples
+
+Longer, runnable code samples for the most common extension recipes. The terse one-line steps live in [Common Extension Recipes](#common-extension-recipes); use these when you want a copy-paste starting point.
+
+### Add a custom tool
+
+1. Implement a class following the `BashTool` pattern in `tools.py`:
+
+```python
+class MyTool:
+    name = "MyTool"
+    description = "One-line description of what the tool does."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "input": {"type": "string", "description": "The input value"},
+        },
+        "required": ["input"],
+    }
+
+    def definition(self):
+        from agent_forge import ToolDefinition
+        return ToolDefinition(name=self.name, description=self.description, parameters=self.parameters)
+
+    async def execute(self, args: dict, *, cwd: str, signal=None):
+        from agent_forge import ToolResult
+        value = args.get("input", "")
+        return ToolResult(content=f"Result: {value}")
+```
+
+2. Register it:
+
+```python
+from agent_forge import default_registry
+registry = default_registry()
+registry.register(MyTool())
+```
+
+3. Wire it into the loop:
+
+```python
+from agent_forge import make_config, agent_loop, UserMessage
+
+cfg = make_config(
+    model=..., api_key=..., system_prompt=...,
+    tool_registry=registry, cwd=".",
+)
+async for event in agent_loop(cfg, [UserMessage(content="use MyTool")]):
+    ...
+```
+
+### Add a new model
+
+Add an entry to `MODELS` in `provider.py`:
+
+```python
+MODELS["claude-new-model"] = Model(
+    id="claude-new-model",
+    context_window=200_000,
+    max_tokens=64_000,
+    reasoning=True,
+    cost=ModelCost(input=3.0, output=15.0, cache_read=0.30, cache_write=3.75),
+)
+```
+
+### Generate API reference docs
+
+```bash
+bash scripts/build_api_docs.sh
+open docs/api/agent_forge.html        # macOS
+xdg-open docs/api/agent_forge.html    # linux
+```
+
+The generator (`pdoc`) renders every module, class, and function with its docstring. The `docs/api/` output is gitignored — rebuild after any docstring change.
