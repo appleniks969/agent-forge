@@ -122,11 +122,22 @@ async def run_chat(cfg: ChatConfig) -> None:
     # Session setup
     session_id: str
     messages = []
-    if cfg.continue_session:
-        target = cfg.resume_id or latest_session_id(cfg.cwd)
-        if not target:
-            print(red("No previous session found."))
-            return
+    # --resume <X> implies resume mode (no need to also pass -c).
+    want_resume = cfg.continue_session or bool(cfg.resume_id)
+    if want_resume:
+        if cfg.resume_id:
+            target = resolve_session_spec(cfg.resume_id, cfg.cwd)
+            if target is None:
+                print(red(
+                    f"No session matches '{cfg.resume_id}'. "
+                    f"Try `agent-forge sessions ls` (or --all) to see options."
+                ))
+                return
+        else:
+            target = latest_session_id(cfg.cwd)
+            if not target:
+                print(red("No previous session found."))
+                return
         resumed = resume_session(target)
         session_id = resumed.session_id
         messages = resumed.messages
