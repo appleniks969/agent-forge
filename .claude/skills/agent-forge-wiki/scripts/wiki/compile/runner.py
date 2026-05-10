@@ -16,8 +16,9 @@ We produce four kinds of output:
   - adrs.md                 decisions worth knowing
   - per_area/<area>.md      one focused page per declared area in contexts.yaml
 
-Skill-first: ``.agent-forge/skills/compile.md`` overrides DEFAULT_SKILL.
-The skill is the load-bearing artifact; the runner is plumbing.
+Skill-first: each output kind has its own sharpened prompt under
+``assets/skills/<kind>.md``. Per-repo override at
+``.agent-forge/skills/wiki-compile-<kind>.md`` takes precedence.
 """
 from __future__ import annotations
 
@@ -35,41 +36,30 @@ from .._llm import one_shot
 from .bundle import build_compile_bundle
 
 
-# ── Built-in skill ────────────────────────────────────────────────────────────
+# ── Built-in skill resolution ─────────────────────────────────────────────────
 
-DEFAULT_SKILL = """\
-You are the wiki compiler for an engineering team. Your job is to read a JSON
-bundle of repository facts (commits, PRs, hotspots, ADRs, notes, session
-insights) and produce ONE markdown page that an engineer can skim in 60
-seconds.
+# Map output spec name → packaged skill file basename under assets/skills/.
+# Per-area outputs (name starts with "area:") share one prompt file.
+_SKILL_NAMES: dict[str, str] = {
+    "onboarding": "onboarding",
+    "hotspots":   "hotspots",
+    "adrs":       "adrs",
+}
 
-Hard rules:
+# The packaged-skill directory lives at:
+#   <skill-root>/assets/skills/<kind>.md
+# Skill-root is 4 levels up from this file:
+#   .claude/skills/agent-forge-wiki/scripts/wiki/compile/runner.py
+#                                  └────────── 4 .parent calls
+_PACKAGED_SKILLS_DIR = Path(__file__).parent.parent.parent.parent / "assets" / "skills"
 
-  1. **Be terse.** No preamble, no recap of the bundle, no "in this section
-     we will…". Headers + bullets, almost no prose.
-  2. **Cite sources** by id when you make a non-obvious claim:
-     `(commit a1b2c3d)`, `(PR #423)`, `(note: redis-decision)`.
-  3. **Skip nothing-burgers.** If the bundle has 14 trivial commits and 1
-     interesting one, write about the 1.
-  4. **Group by topic, not by source.** Don't have a "PRs" section and a
-     "commits" section — have a "Recent payments work" section that draws
-     from both.
-  5. **Stay under {budget} bytes.** If you can't fit, prioritise the
-     non-obvious + recent.
-  6. **No invention.** If the bundle doesn't say it, don't write it. The
-     wiki must never hallucinate.
-  7. **Empty-bundle case:** if the bundle is mostly empty, output:
-
-         # {output_name}
-
-         _(insufficient signal — run `agent-forge wiki gather` first.)_
-
-OUTPUT FORMAT:
-
-  - The first line is exactly: `# {output_name_human}`
-  - No HTML, no front-matter, no closing summary.
-  - Markdown headers `##` for sections, `-` for bullets, `\\`backticks\\`` for
-     paths/identifiers.
+# Last-resort fallback if neither override nor packaged file exists. Kept
+# deliberately generic; per-output sharpening lives in assets/skills/*.md.
+_FALLBACK_SKILL = """\
+You are the wiki compiler for an engineering team. Read the JSON bundle of
+repository facts and produce ONE markdown page that an engineer can skim
+in 60 seconds. Be terse, cite sources by id, group by topic. The first
+line is exactly: `# {output_name_human}`. Stay under {budget} bytes.
 """
 
 # ── Output specs ──────────────────────────────────────────────────────────────
@@ -105,9 +95,31 @@ class CompileResult:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def load_skill(repo_root: Path | str) -> str:
-    """Return user-customised skill if present, else DEFAULT_SKILL."""
-    p = skills_dir(Path(repo_root)) / "compile.md"
+def _skill_kind_for(spec_name: str) -> str:
+    """Map an _OutputSpec.name to a skill kind under assets/skills/."""
+    if spec_name.startswith("area:"):
+        return "per_area"
+    return _SKILL_NAMES.get(spec_name, spec_name)
+
+
+def load_skill(repo_root: Path | str, spec_name: str = "onboarding") -> str:
+    """Resolve the compile skill for one output spec.
+
+    Resolution order (first hit wins):
+      1. Per-repo override at .agent-forge/skills/wiki-compile-<kind>.md
+      2. Per-repo legacy at .agent-forge/skills/compile.md (single-skill,
+         pre-extraction shape — kept for back-compat)
+      3. Packaged at <skill>/assets/skills/<kind>.md
+      4. Built-in _FALLBACK_SKILL
+
+    ``spec_name`` is the _OutputSpec.name (e.g. "onboarding", "hotspots",
+    "adrs", or "area:<name>" — the last maps to per_area).
+    """
+    kind = _skill_kind_for(spec_name)
+    sdir = skills_dir(Path(repo_root))
+
+    # 1. New-shape per-repo override.
+    p = sdir / f"wiki-compile-{kind}.md"
     if p.exists():
         try:
             text = p.read_text(encoding="utf-8").strip()
@@ -115,7 +127,45 @@ def load_skill(repo_root: Path | str) -> str:
                 return text
         except OSError:
             pass
-    return DEFAULT_SKILL
+
+    # 2. Legacy single-skill per-repo override (pre-extraction; applies to all).
+    legacy = sdir / "compile.md"
+    if legacy.exists():
+        try:
+            text = legacy.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        except OSError:
+            pass
+
+    # 3. Packaged sharpened skill.
+    pkg = _PACKAGED_SKILLS_DIR / f"{kind}.md"
+    if pkg.exists():
+        try:
+            text = pkg.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        except OSError:
+            pass
+
+    # 4. Built-in fallback.
+    return _FALLBACK_SKILL
+
+
+# Back-compat alias: prior shape exposed a single DEFAULT_SKILL string.
+# Eagerly load the onboarding prompt as that constant; the per-output
+# sharpening happens inside load_skill().
+def _read_default() -> str:
+    pkg = _PACKAGED_SKILLS_DIR / "onboarding.md"
+    if pkg.exists():
+        try:
+            return pkg.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return _FALLBACK_SKILL.strip()
+
+
+DEFAULT_SKILL: str = _read_default()
 
 
 async def compile_wiki(
@@ -151,7 +201,6 @@ async def compile_wiki(
         wanted = set(only)
         specs = [s for s in specs if s.name in wanted]
 
-    skill = load_skill(root)
     written: list[Path] = []
     skipped: list[str] = []
     errors: list[tuple[str, str]] = []
@@ -164,6 +213,8 @@ async def compile_wiki(
                 skipped.append(spec.name)
                 return
             try:
+                # Per-output skill — sharpened for the kind of page.
+                skill = load_skill(root, spec.name)
                 path = await _compile_one(root, spec, provider, model, skill)
             except Exception as e:
                 errors.append((spec.name, f"{type(e).__name__}: {e}"))
@@ -198,6 +249,7 @@ async def _compile_one(
         budget=spec.budget,
         output_name=spec.name,
         output_name_human=spec.human_name,
+        area_filter=spec.area or "(none — global page)",
     )
     user = (
         f"Produce the `{spec.relpath}` page now.\n"

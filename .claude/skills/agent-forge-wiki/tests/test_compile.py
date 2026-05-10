@@ -30,10 +30,49 @@ def test_load_skill_default(tmp_path):
 
 
 def test_load_skill_user_override(tmp_path):
+    """Legacy single-file override (.agent-forge/skills/compile.md) still works."""
     sd = storage.skills_dir(tmp_path)
     sd.mkdir(parents=True)
     (sd / "compile.md").write_text("Custom compile skill {budget}", encoding="utf-8")
     assert load_skill(tmp_path) == "Custom compile skill {budget}"
+
+
+def test_load_skill_per_output_packaged(tmp_path):
+    """Each output kind resolves to its own packaged skill file."""
+    onboarding = load_skill(tmp_path, "onboarding")
+    hotspots = load_skill(tmp_path, "hotspots")
+    adrs = load_skill(tmp_path, "adrs")
+    per_area = load_skill(tmp_path, "area:payments")
+
+    # All four are non-empty strings...
+    assert all(isinstance(s, str) and s for s in (onboarding, hotspots, adrs, per_area))
+    # ...and they differ from each other (sharpened per output).
+    assert len({onboarding, hotspots, adrs, per_area}) == 4
+    # The per-area prompt mentions area filtering specifically.
+    assert "area" in per_area.lower()
+
+
+def test_load_skill_per_output_override(tmp_path):
+    """Per-output override at .agent-forge/skills/wiki-compile-<kind>.md wins."""
+    sd = storage.skills_dir(tmp_path)
+    sd.mkdir(parents=True)
+    (sd / "wiki-compile-hotspots.md").write_text("HOTSPOTS OVERRIDE {budget}", encoding="utf-8")
+
+    assert load_skill(tmp_path, "hotspots") == "HOTSPOTS OVERRIDE {budget}"
+    # Other kinds unaffected — fall through to packaged.
+    assert load_skill(tmp_path, "onboarding") != "HOTSPOTS OVERRIDE {budget}"
+
+
+def test_load_skill_per_output_override_beats_legacy(tmp_path):
+    """New-shape per-output override takes precedence over legacy compile.md."""
+    sd = storage.skills_dir(tmp_path)
+    sd.mkdir(parents=True)
+    (sd / "compile.md").write_text("LEGACY", encoding="utf-8")
+    (sd / "wiki-compile-onboarding.md").write_text("PER-OUTPUT WINS", encoding="utf-8")
+
+    assert load_skill(tmp_path, "onboarding") == "PER-OUTPUT WINS"
+    # Legacy still applies to kinds without a new-shape override.
+    assert load_skill(tmp_path, "hotspots") == "LEGACY"
 
 
 # ── Bundle builder ────────────────────────────────────────────────────────────
