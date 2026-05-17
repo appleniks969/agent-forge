@@ -68,8 +68,8 @@ class Tool(Protocol):
 class ToolRegistry:
     """Mutable registry mapping tool names to ``Tool`` instances.
 
-    Composition roots (``chat.py``, ``autonomous.py``) build a registry via
-    ``default_registry()`` and pass it to ``make_config(...)``. The agent loop
+    The composition root (``chat.py``) builds a registry via
+    ``default_registry()`` and passes it to ``make_config(...)``. The agent loop
     looks up tools by name when the LLM emits a tool call.
 
     Names must be unique; ``register()`` overwrites any prior tool with the
@@ -78,10 +78,45 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        # Set of names that came from an MCP source. Tracked so
+        # ``replace_mcp_tools()`` can safely remove only those without
+        # disturbing built-ins or user-registered tools.
+        self._mcp_names: set[str] = set()
 
     def register(self, tool: Tool) -> None:
-        """Add (or replace) a tool. Idempotent for the same name."""
+        """Add (or replace) a tool. Idempotent for the same name.
+
+        Tools registered via this path are treated as **non-MCP**: if the
+        same name was previously an MCP tool, it loses its MCP tag (the
+        new tool wins both the slot and the categorisation).
+        """
         self._tools[tool.name] = tool
+        self._mcp_names.discard(tool.name)
+
+    def replace_mcp_tools(self, tools: list[Tool]) -> None:
+        """Atomically swap the set of MCP-sourced tools.
+
+        Removes every previously-registered MCP tool and registers
+        ``tools`` in their place, tagging each new entry as MCP-sourced
+        so a subsequent ``replace_mcp_tools()`` call can find them again.
+        Built-ins and user-registered tools are never touched.
+
+        This is the hot-reload seam used by ``/mcp reconnect`` (Phase H)
+        and by ``AgentRuntime`` after ``MCPManager.connect_all()``.
+
+        Caller responsibility: tool names should already be namespaced
+        (``{server}__{tool}``) so two MCP servers don't collide. The
+        registry itself doesn't enforce a prefix — it simply remembers
+        which names it considers MCP.
+        """
+        # 1. Drop the old MCP tools
+        for name in self._mcp_names:
+            self._tools.pop(name, None)
+        self._mcp_names.clear()
+        # 2. Add the new ones, tagging them
+        for tool in tools:
+            self._tools[tool.name] = tool
+            self._mcp_names.add(tool.name)
 
     def get(self, name: str) -> Tool | None:
         """Return the tool registered under ``name``, or ``None`` if absent."""
@@ -94,6 +129,10 @@ class ToolRegistry:
     def names(self) -> list[str]:
         """Return all registered tool names in insertion order."""
         return list(self._tools.keys())
+
+    def mcp_names(self) -> list[str]:
+        """Names of currently-registered MCP-sourced tools (for diagnostics)."""
+        return [n for n in self._tools if n in self._mcp_names]
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -123,6 +162,41 @@ def _sandbox(path: str, cwd: str) -> str:
     except ValueError:
         raise ValueError(f"Path {path!r} escapes working directory")
     return str(resolved)
+
+
+def sanitize_exception(exc: BaseException) -> str:
+    """Convert an exception into an LLM-safe ToolResult.content string.
+
+    Two jobs:
+
+    1. **Prefix with the exception class name.** ``str(exc)`` alone drops the
+       type info (a bare ``"foo"`` is much less actionable for the LLM than
+       ``"ValueError: foo"``).
+    2. **Redact the user's home directory** (and the macOS ``$TMPDIR``
+       symlink target). Standard-library exceptions routinely embed
+       absolute paths in their messages — ``FileNotFoundError: [Errno 2]
+       No such file or directory: '/Users/alice/.ssh/id_rsa'`` — which leak
+       both the username and the existence of specific files. Replacing
+       the home prefix with ``~`` keeps the message diagnostic without
+       leaking identity.
+
+    Deliberately omits the traceback. Tracebacks contain absolute paths to
+    site-packages and internal modules; they're useful for *developers*
+    (who can re-run with ``--debug-stream`` or log capture) but they're
+    noise to the LLM and a privacy leak in transcripts.
+
+    Used by:
+    - Every tool's last-resort ``except Exception`` in this file.
+    - ``loop._stream_one_turn`` for exceptions that escape ``tool.execute``.
+    """
+    msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    try:
+        home = str(Path.home())
+    except (RuntimeError, OSError):
+        home = ""
+    if home and home not in ("", "/"):
+        msg = msg.replace(home, "~")
+    return msg
 
 # ── BashTool ──────────────────────────────────────────────────────────────────
 
@@ -167,7 +241,7 @@ class BashTool:
         except asyncio.TimeoutError:
             return ToolResult(content=f"Command timed out after {timeout}s", is_error=True)
         except Exception as exc:
-            return ToolResult(content=str(exc), is_error=True)
+            return ToolResult(content=sanitize_exception(exc), is_error=True)
         if done.aborted:
             return ToolResult(content="Command aborted", is_error=True)
         output = done.stdout
@@ -230,7 +304,7 @@ class ReadTool:
         except FileNotFoundError:
             return ToolResult(content=f"File not found: {path}", is_error=True)
         except Exception as exc:
-            return ToolResult(content=str(exc), is_error=True)
+            return ToolResult(content=sanitize_exception(exc), is_error=True)
 
 # ── WriteTool ─────────────────────────────────────────────────────────────────
 
@@ -273,7 +347,7 @@ class WriteTool:
             lines = content.count("\n") + (1 if content else 0)
             return ToolResult(content=f"Wrote {lines} line(s) to {path}")
         except Exception as exc:
-            return ToolResult(content=str(exc), is_error=True)
+            return ToolResult(content=sanitize_exception(exc), is_error=True)
 
 # ── EditTool helpers (Fix 2: fuzzy matching) ────────────────────────────────
 
@@ -457,7 +531,7 @@ class EditTool:
         except FileNotFoundError:
             return ToolResult(content=f"File not found: {path}", is_error=True)
         except Exception as exc:
-            return ToolResult(content=str(exc), is_error=True)
+            return ToolResult(content=sanitize_exception(exc), is_error=True)
 # ── GrepTool ──────────────────────────────────────────────────────────────────
 
 class GrepTool:
@@ -551,7 +625,7 @@ class GrepTool:
         except re.error as exc:
             return ToolResult(content=f"Invalid regex: {exc}", is_error=True)
         except Exception as exc:
-            return ToolResult(content=str(exc), is_error=True)
+            return ToolResult(content=sanitize_exception(exc), is_error=True)
 
 # ── FindTool ──────────────────────────────────────────────────────────────────
 
@@ -600,7 +674,7 @@ class FindTool:
                 result += f"\n... and {len(matches) - 500} more"
             return ToolResult(content=result)
         except Exception as exc:
-            return ToolResult(content=str(exc), is_error=True)
+            return ToolResult(content=sanitize_exception(exc), is_error=True)
 
 
 # ── Default registry ──────────────────────────────────────────────────────────

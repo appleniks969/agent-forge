@@ -5,14 +5,10 @@ import pytest
 
 from agent_forge.prompts import (
     CHAT_GUIDELINES, CHAT_IDENTITY,
-    EXECUTE_GUIDELINES, EXECUTE_IDENTITY,
-    PLAN_GUIDELINES, PLAN_IDENTITY,
     TOOLS_SECTION,
-    VERIFY_GUIDELINES, VERIFY_IDENTITY,
-    build_autonomous_prompt, build_chat_prompt, build_repo_map,
+    build_chat_prompt, build_repo_map,
     discover_skills, environment_section, load_agents_doc, tools_section,
 )
-from agent_forge.system_prompt import SectionName, SystemPrompt
 from agent_forge.tools import default_registry
 
 
@@ -20,9 +16,6 @@ from agent_forge.tools import default_registry
 
 @pytest.mark.parametrize("text", [
     TOOLS_SECTION, CHAT_IDENTITY, CHAT_GUIDELINES,
-    PLAN_IDENTITY, PLAN_GUIDELINES,
-    EXECUTE_IDENTITY, EXECUTE_GUIDELINES,
-    VERIFY_IDENTITY, VERIFY_GUIDELINES,
 ])
 def test_static_prompt_constants_are_non_empty(text: str):
     assert isinstance(text, str)
@@ -108,55 +101,6 @@ def test_discover_skills_returns_none_when_dir_missing(tmp_path):
     assert discover_skills(str(tmp_path)) is None
 
 
-# ── build_autonomous_prompt assembles a SystemPrompt ──────────────────────────
-
-@pytest.mark.parametrize("phase,identity_substr", [
-    ("plan",    "planning mode"),
-    ("execute", "autonomous mode"),
-    ("verify",  "verification mode"),
-])
-def test_build_autonomous_prompt_yields_phase_specific_identity(
-    phase: str, identity_substr: str, tmp_path,
-):
-    sp = build_autonomous_prompt(
-        phase, cwd=str(tmp_path), tool_registry=default_registry(),
-        branch="b", worktree_path=str(tmp_path),
-    )
-    assert isinstance(sp, SystemPrompt)
-    sections = sp.build()
-    blob = "\n".join(s.text for s in sections)
-    assert identity_substr in blob
-    assert TOOLS_SECTION in blob
-
-
-def test_build_autonomous_prompt_rejects_unknown_phase(tmp_path):
-    with pytest.raises(ValueError, match="Unknown phase"):
-        build_autonomous_prompt(
-            "ship",  # type: ignore[arg-type]
-            cwd=str(tmp_path), tool_registry=default_registry(),
-        )
-
-
-def test_build_autonomous_prompt_uses_skills_cwd(tmp_path):
-    """skills_cwd lets autonomous discover skills from the repo even when cwd is a worktree."""
-    repo = tmp_path / "repo"
-    worktree = tmp_path / "worktree"
-    repo.mkdir(); worktree.mkdir()
-    skills = repo / ".agent-forge" / "skills"
-    skills.mkdir(parents=True)
-    (skills / "demo.md").write_text("Demo skill description.\n")
-
-    sp = build_autonomous_prompt(
-        "execute",
-        cwd=str(worktree), tool_registry=default_registry(),
-        branch="b", worktree_path=str(worktree),
-        skills_cwd=str(repo),
-    )
-    blob = "\n".join(s.text for s in sp.build())
-    assert "/demo" in blob
-    assert "Demo skill description." in blob
-
-
 # ── build_chat_prompt smoke test ──────────────────────────────────────────────
 
 class _FakeCfg:
@@ -172,19 +116,49 @@ def test_build_chat_prompt_includes_chat_identity(tmp_path):
     assert TOOLS_SECTION in blob
 
 
-def test_build_chat_prompt_includes_wiki_when_curated_present(tmp_path):
-    """When .agent-forge/curated/ has content, the WIKI section is injected."""
-    curated = tmp_path / ".agent-forge" / "curated"
-    curated.mkdir(parents=True)
-    (curated / "onboarding.md").write_text("Start here: see payments/.", encoding="utf-8")
-    sp = build_chat_prompt(_FakeCfg(str(tmp_path)), default_registry())
-    blob = "\n".join(s.text for s in sp.build())
-    assert "Repository wiki" in blob
-    assert "Start here" in blob
+# ── build_chat_prompt_async: runs file I/O off the event loop ────────────────
+
+import asyncio
+import time
+
+from agent_forge.prompts import build_chat_prompt_async
+from agent_forge.system_prompt import SystemPrompt
 
 
-def test_build_chat_prompt_omits_wiki_when_no_data(tmp_path):
-    """No .agent-forge/ → WIKI section is silently absent (not crashed)."""
-    sp = build_chat_prompt(_FakeCfg(str(tmp_path)), default_registry())
-    blob = "\n".join(s.text for s in sp.build())
-    assert "Repository wiki" not in blob
+@pytest.mark.asyncio
+async def test_build_chat_prompt_async_returns_system_prompt(tmp_path):
+    """The async composer returns a usable SystemPrompt."""
+    sp = await build_chat_prompt_async(_FakeCfg(str(tmp_path)), default_registry())
+    assert isinstance(sp, SystemPrompt)
+    sections = sp.build()
+    blob = "\n".join(s.text for s in sections)
+    assert "interactive chat mode" in blob
+
+
+@pytest.mark.asyncio
+async def test_build_chat_prompt_async_does_not_block_event_loop(tmp_path, monkeypatch):
+    """While build_repo_map is running in a thread, other tasks make progress."""
+    original = build_repo_map
+
+    def slow(cwd):
+        time.sleep(0.2)
+        return original(cwd)
+
+    monkeypatch.setattr("agent_forge.prompts.build_repo_map", slow)
+
+    async def ticker():
+        ticks = 0
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            ticks += 1
+        return ticks
+
+    cfg = _FakeCfg(str(tmp_path))
+    ticks_task = asyncio.create_task(ticker())
+    sp = await build_chat_prompt_async(cfg, default_registry())
+    ticks = await ticks_task
+
+    assert isinstance(sp, SystemPrompt)
+    # If build_repo_map had blocked the event loop, ticker would have made
+    # zero progress during the 200 ms sleep. >5 ticks proves it ran in a thread.
+    assert ticks > 5, f"event loop blocked: only {ticks} ticks"

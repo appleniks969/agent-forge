@@ -2,12 +2,9 @@
 chat.py — interactive REPL and CLI entry point (composition root).
 
 Depends on all other modules. Sits at the top of the dependency stack as
-the composition root for interactive use: wires loop + context + session +
-prompts + tools + renderer into the prompt_toolkit REPL. The CLI entry point
-(`agent-forge` script defined in pyproject.toml) lives in main() here.
-
-autonomous.py is a parallel composition root for non-interactive use; the two
-share loop/context/tools/prompts/renderer but diverge at the UI/persistence layer.
+the sole composition root: wires loop + context + session + prompts + tools +
+renderer into the prompt_toolkit REPL. The CLI entry point (`agent-forge`
+script defined in pyproject.toml) lives in main() here.
 
 Owns: run_chat() (REPL), _run_single_prompt() (--prompt flag), main() (CLI),
       paste collapse/expand, /slash commands, end-of-session learning extraction,
@@ -19,7 +16,7 @@ import asyncio
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 
@@ -36,14 +33,15 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.styles import Style as PtkStyle
 
 from .loop import AgentResult
+from .mcp import MCPServerConfig, load_mcp_configs, parse_mcp_server_spec
 from .messages import UserMessage
 from .models import DEFAULT_MODEL, MODELS, Model
-from .prompts import build_system_prompt
-from .renderer import dim, bold, green, red, yellow, render_event, print_footer
-from .runtime import AgentRuntime
+from .prompts import build_chat_prompt_async
+from .renderer import dim, bold, cyan, green, red, yellow, render_event, print_footer
+from .runtime import AgentRuntime, build_runtime_with_mcp
 from .session import (
     append_message, append_metadata, latest_session_id,
-    list_sessions_for_cwd, new_id, read_session_meta,
+    list_sessions_for_cwd, new_id, read_session_meta, redact_secrets,
     render_session_markdown, resolve_session_spec, resume_session,
     update_memory,
 )
@@ -62,10 +60,16 @@ class ChatConfig:
     continue_session: bool = False
     resume_id: str | None = None
     custom_system_prompt: str | None = None
-    # MVP-2.5: automatically distill session insights into raw/notes/session/
-    # on graceful exit. Default off so the user doesn't pay for an LLM call
-    # they didn't ask for; opt in via --ratchet.
-    auto_ratchet: bool = False
+    # ── MCP (Phase H) ──────────────────────────────────────────────────
+    # mcp_enabled: when True, load server configs from
+    #   ~/.agent-forge/mcp.toml + <cwd>/.agent-forge/mcp.toml at startup
+    #   and merge with mcp_servers. When False (--no-mcp), skip the load
+    #   entirely — even ad-hoc --mcp-server flags are honoured (they go
+    #   through mcp_servers, not the file loader).
+    # mcp_servers: ad-hoc configs from repeated --mcp-server CLI flags;
+    #   appended after the TOML-loaded list, last write wins by name.
+    mcp_enabled: bool = True
+    mcp_servers: list = field(default_factory=list)   # list[MCPServerConfig]
 
 # ── Paste handling ────────────────────────────────────────────────────────────
 
@@ -120,6 +124,111 @@ def _format_age(ts_seconds: float) -> str:
 
 # ── Chat session ──────────────────────────────────────────────────────────────
 
+# ── MCP composition helpers (Phase H) ─────────────────────────────────────────
+
+def _resolve_mcp_configs(cfg: ChatConfig) -> list[MCPServerConfig]:
+    """Compute the final list of MCP server configs for this session.
+
+    Sources, merged by name (last write wins so CLI overrides files):
+      1. Global file: ``~/.agent-forge/mcp.toml``       (if mcp_enabled)
+      2. Project file: ``<cwd>/.agent-forge/mcp.toml``  (if mcp_enabled)
+      3. ``--mcp-server`` CLI flags                     (always)
+
+    Returns ``[]`` when MCP is disabled AND no ``--mcp-server`` flags
+    were given — `build_runtime_with_mcp` interprets that as "no manager".
+    """
+    by_name: dict[str, MCPServerConfig] = {}
+    if cfg.mcp_enabled:
+        for c in load_mcp_configs(cfg.cwd):
+            by_name[c.name] = c
+    for c in cfg.mcp_servers:
+        by_name[c.name] = c
+    return list(by_name.values())
+
+
+def _format_mcp_status(runtime: AgentRuntime) -> str:
+    """Render the `/mcp` slash command output for the current runtime."""
+    mgr = runtime.mcp_manager
+    if mgr is None:
+        return dim("MCP is not enabled. Use --mcp or --mcp-server, or add ~/.agent-forge/mcp.toml")
+    if not mgr.clients:
+        return dim("MCP is enabled but no servers are configured.")
+    lines = [bold("MCP servers:")]
+    for client in mgr.clients:
+        status = client.status.value
+        coloured = {
+            "connected": green(status),
+            "failed": red(status),
+            "closed": yellow(status),
+            "connecting": yellow(status),
+            "disconnected": dim(status),
+        }.get(status, status)
+        tool_count = len(client.tools())
+        err = f"  ({client.error})" if client.error else ""
+        lines.append(
+            f"  {cyan(client.config.name):20}  {coloured}  "
+            f"{dim(f'{tool_count} tool{'s' if tool_count != 1 else ''}')}{err}"
+        )
+    return "\n".join(lines)
+
+
+async def _handle_mcp_command(
+    user_input: str,
+    runtime: AgentRuntime,
+    tool_registry,
+) -> None:
+    """Dispatch ``/mcp [subcommand]``.
+
+    Subcommands:
+        /mcp                 — show server status
+        /mcp tools           — list MCP tools currently registered
+        /mcp reconnect       — reconnect every server
+        /mcp reconnect <name> — reconnect one named server
+    """
+    parts = user_input.split(maxsplit=2)
+    sub = parts[1] if len(parts) > 1 else ""
+    arg = parts[2] if len(parts) > 2 else ""
+
+    mgr = runtime.mcp_manager
+
+    if sub == "":
+        print(_format_mcp_status(runtime))
+        return
+
+    if sub == "tools":
+        if mgr is None or not mgr.tools():
+            print(dim("No MCP tools registered."))
+            return
+        print(bold("MCP tools:"))
+        for t in mgr.tools():
+            print(f"  {cyan(t.name):30}  {dim(t.description)}")
+        return
+
+    if sub == "reconnect":
+        if mgr is None:
+            print(red("MCP is not enabled."))
+            return
+        if arg:
+            print(dim(f"[mcp] reconnecting {arg}…"))
+            ok = await mgr.reconnect(arg)
+            tool_registry.replace_mcp_tools(mgr.tools())
+            print((green if ok else red)(f"[mcp] {arg}: {'connected' if ok else 'failed'}"))
+        else:
+            print(dim("[mcp] reconnecting all servers…"))
+            for client in mgr.clients:
+                await mgr.reconnect(client.config.name)
+            tool_registry.replace_mcp_tools(mgr.tools())
+            print(_format_mcp_status(runtime))
+        # The MCP_TOOLS section sits in cache group 1 (session-stable). After
+        # a reconnect the underlying tool set may have changed, so we drop
+        # the cached resolution and let the next turn re-render. Group 0
+        # (identity/tools/guidelines) is untouched, preserving its cache.
+        runtime.system_prompt.invalidate_session()
+        return
+
+    print(red(f"Unknown /mcp subcommand: {sub!r}. Try /mcp, /mcp tools, /mcp reconnect [name]"))
+
+
 async def run_chat(cfg: ChatConfig) -> None:
     tool_registry = default_registry()
 
@@ -156,314 +265,253 @@ async def run_chat(cfg: ChatConfig) -> None:
         session_id = new_id()
         append_metadata(session_id, cfg.model.id, cfg.cwd)
 
-    system_prompt = build_system_prompt(cfg, tool_registry)
-    runtime = AgentRuntime(
+    system_prompt = await build_chat_prompt_async(cfg, tool_registry)
+    mcp_configs = _resolve_mcp_configs(cfg)
+
+    def _print_mcp_status(name: str, status: str, error: str | None) -> None:
+        if status == "connected":
+            print(dim(f"  [mcp] {name}: {green('connected')}"))
+        else:
+            err = f" — {error}" if error else ""
+            print(dim(f"  [mcp] {name}: {red(status)}{err}"))
+
+    runtime = await build_runtime_with_mcp(
         model=cfg.model,
         system_prompt=system_prompt,
         tool_registry=tool_registry,
         cwd=cfg.cwd,
+        mcp_configs=mcp_configs,
         api_key=cfg.api_key,
         thinking=cfg.thinking,
         max_turns=cfg.max_turns,
         max_tokens=cfg.model.max_tokens,
+        on_status=_print_mcp_status if mcp_configs else None,
     )
     if messages:
         runtime.init_messages(messages)
 
-    # Banner
-    print(f"\n{bold('agent-forge')} {dim(f'v{__version__}')}")
-    print(dim(f"  Model: {cfg.model.id} · {cfg.model.context_window//1000}K ctx · /quit /clear /status /remember"))
-    print()
+    try:
+        # Banner
+        print(f"\n{bold('agent-forge')} {dim(f'v{__version__}')}")
+        print(dim(f"  Model: {cfg.model.id} · {cfg.model.context_window//1000}K ctx · /quit /clear /status /remember /mcp"))
+        print()
 
-    # prompt_toolkit session — persistent history in ~/.agent-forge-history
-    history_file = Path.home() / ".agent-forge-history"
-    ptk_style = PtkStyle.from_dict({"prompt": "ansicyan bold"})
-    _paste_store: dict[int, str] = {}
-    _paste_counter: list[int] = [0]
-    ptk_session: PromptSession = PromptSession(
-        history=FileHistory(str(history_file)),
-        auto_suggest=AutoSuggestFromHistory(),
-        style=ptk_style,
-        mouse_support=False,
-        key_bindings=_make_paste_bindings(_paste_store, _paste_counter),
-    )
+        # prompt_toolkit session — persistent history in ~/.agent-forge-history
+        history_file = Path.home() / ".agent-forge-history"
+        ptk_style = PtkStyle.from_dict({"prompt": "ansicyan bold"})
+        _paste_store: dict[int, str] = {}
+        _paste_counter: list[int] = [0]
+        ptk_session: PromptSession = PromptSession(
+            history=FileHistory(str(history_file)),
+            auto_suggest=AutoSuggestFromHistory(),
+            style=ptk_style,
+            mouse_support=False,
+            key_bindings=_make_paste_bindings(_paste_store, _paste_counter),
+        )
 
-    session_cost: float = 0.0
-    session_turns: int = 0
-    session_ctx_pct: float = 0.0
-    session_cache_read: int = 0
-    session_cache_write: int = 0
+        session_cost: float = 0.0
+        session_turns: int = 0
+        session_ctx_pct: float = 0.0
+        session_cache_read: int = 0
+        session_cache_write: int = 0
 
-    def _toolbar() -> str:
-        parts = [
-            cfg.model.id,
-            f"turns: {session_turns}",
-            f"ctx: {session_ctx_pct:.0f}%",
-            f"↓{session_cache_read:,} cache_read",
-            f"↑{session_cache_write:,} cache_write",
-        ]
-        return "  │  ".join(parts)
+        def _toolbar() -> str:
+            parts = [
+                cfg.model.id,
+                f"turns: {session_turns}",
+                f"ctx: {session_ctx_pct:.0f}%",
+                f"↓{session_cache_read:,} cache_read",
+                f"↑{session_cache_write:,} cache_write",
+            ]
+            return "  │  ".join(parts)
 
-    abort: asyncio.Event | None = None
-    _exited_gracefully = False
+        abort: asyncio.Event | None = None
+        _exited_gracefully = False
 
-    while True:
-        try:
-            user_input = await ptk_session.prompt_async("> ", bottom_toolbar=_toolbar)
-        except (EOFError, KeyboardInterrupt):
-            print()
-            _exited_gracefully = True
-            break
-
-        user_input = _expand_pastes(user_input.strip(), _paste_store)
-        if not user_input:
-            continue
-
-        # Slash commands
-        if user_input in ("/quit", "/exit", "/q"):
-            _exited_gracefully = True
-            break
-        if user_input.startswith("/remember "):
-            note = user_input[len("/remember "):].strip()
-            if not note:
-                print(red("Usage: /remember <text to save to memory>"))
-            else:
-                try:
-                    update_memory(cfg.cwd, [note], "project")
-                    print(green(f"[memory] Saved: {note[:60]}…" if len(note) > 60 else f"[memory] Saved: {note}"))
-                except Exception as exc:
-                    print(red(f"[memory] Save failed: {exc}"))
-            continue
-        if user_input == "/sessions":
-            metas = list_sessions_for_cwd(cfg.cwd)
-            if not metas:
-                print(dim("No sessions for this cwd yet."))
-                continue
-            print(bold("Sessions in this directory (newest first):"))
-            for i, m in enumerate(metas[:20], start=1):
-                marker = " ← current" if m.session_id == session_id else ""
-                title = m.title or dim("(untitled)")
-                age = _format_age(m.last_modified)
-                # 2-col layout: idx + title + age + sid prefix
-                print(f"  {i:>2}  {title:<60}  {age:<10}  {dim(m.session_id[:8])}{marker}")
-            print(dim("  Switch to one:  /resume <n|id>"))
-            continue
-        if user_input.startswith("/resume"):
-            parts = user_input.split(maxsplit=1)
-            if len(parts) < 2:
-                print(red("Usage: /resume <n|id>   (see /sessions for the list)"))
-                continue
-            target = resolve_session_spec(parts[1], cfg.cwd)
-            if target is None:
-                print(red(f"No session matches '{parts[1]}'. Try /sessions to see options."))
-                continue
-            if target == session_id:
-                print(dim("Already on that session."))
-                continue
-            resumed = resume_session(target)
-            # Swap state in place — keep the `messages` list reference stable.
-            messages.clear()
-            messages.extend(resumed.messages)
-            session_id = target
-            runtime.clear()
-            if messages:
-                runtime.init_messages(messages)
-            # Reset toolbar / footer counters for the new session.
-            session_cost = 0.0
-            session_turns = 0
-            session_ctx_pct = 0.0
-            session_cache_read = 0
-            session_cache_write = 0
-            meta = read_session_meta(session_id)
-            title = (meta.title if meta and meta.title else "(untitled)")
-            age = _format_age(meta.last_modified) if meta else "?"
-            print(green(
-                f"[Switched] \"{title}\" · {len(messages)} messages · "
-                f"{age} · {session_id[:8]}…"
-            ))
-            continue
-        if user_input == "/clear":
-            messages.clear()
-            runtime.clear()
-            print(dim("Conversation cleared."))
-            continue
-        if user_input == "/ratchet":
-            await _run_ratchet(cfg, session_id, verbose=True)
-            continue
-        if user_input.startswith("/wrong "):
-            correction = user_input[len("/wrong "):].strip()
-            if not correction:
-                print(red("Usage: /wrong <what the agent got wrong>"))
-                continue
+        while True:
             try:
-                from .wiki.metrics import record_override
-                record_override(
-                    cfg.cwd,
-                    session_id=session_id,
-                    turn=runtime.context.current_turn,
-                    citation_id="(unattributed)",
-                    user_correction=correction,
+                user_input = await ptk_session.prompt_async("> ", bottom_toolbar=_toolbar)
+            except (EOFError, KeyboardInterrupt):
+                print()
+                _exited_gracefully = True
+                break
+
+            user_input = _expand_pastes(user_input.strip(), _paste_store)
+            if not user_input:
+                continue
+
+            # Slash commands
+            if user_input in ("/quit", "/exit", "/q"):
+                _exited_gracefully = True
+                break
+            if user_input.startswith("/remember "):
+                note = user_input[len("/remember "):].strip()
+                if not note:
+                    print(red("Usage: /remember <text to save to memory>"))
+                else:
+                    try:
+                        update_memory(cfg.cwd, [note], "project")
+                        print(green(f"[memory] Saved: {note[:60]}…" if len(note) > 60 else f"[memory] Saved: {note}"))
+                    except Exception as exc:
+                        print(red(f"[memory] Save failed: {exc}"))
+                continue
+            if user_input == "/sessions":
+                metas = list_sessions_for_cwd(cfg.cwd)
+                if not metas:
+                    print(dim("No sessions for this cwd yet."))
+                    continue
+                print(bold("Sessions in this directory (newest first):"))
+                for i, m in enumerate(metas[:20], start=1):
+                    marker = " ← current" if m.session_id == session_id else ""
+                    title = m.title or dim("(untitled)")
+                    age = _format_age(m.last_modified)
+                    # 2-col layout: idx + title + age + sid prefix
+                    print(f"  {i:>2}  {title:<60}  {age:<10}  {dim(m.session_id[:8])}{marker}")
+                print(dim("  Switch to one:  /resume <n|id>"))
+                continue
+            if user_input.startswith("/resume"):
+                parts = user_input.split(maxsplit=1)
+                if len(parts) < 2:
+                    print(red("Usage: /resume <n|id>   (see /sessions for the list)"))
+                    continue
+                target = resolve_session_spec(parts[1], cfg.cwd)
+                if target is None:
+                    print(red(f"No session matches '{parts[1]}'. Try /sessions to see options."))
+                    continue
+                if target == session_id:
+                    print(dim("Already on that session."))
+                    continue
+                resumed = resume_session(target)
+                # Swap state in place — keep the `messages` list reference stable.
+                messages.clear()
+                messages.extend(resumed.messages)
+                session_id = target
+                runtime.clear()
+                if messages:
+                    runtime.init_messages(messages)
+                # Reset toolbar / footer counters for the new session.
+                session_cost = 0.0
+                session_turns = 0
+                session_ctx_pct = 0.0
+                session_cache_read = 0
+                session_cache_write = 0
+                meta = read_session_meta(session_id)
+                title = (meta.title if meta and meta.title else "(untitled)")
+                age = _format_age(meta.last_modified) if meta else "?"
+                print(green(
+                    f"[Switched] \"{title}\" · {len(messages)} messages · "
+                    f"{age} · {session_id[:8]}…"
+                ))
+                continue
+            if user_input == "/clear":
+                messages.clear()
+                runtime.clear()
+                print(dim("Conversation cleared."))
+                continue
+            if user_input == "/status":
+                tok = runtime.context.estimate_tokens()
+                pct = tok / cfg.model.context_window * 100
+                print(f"{bold('── Status ──')}\n"
+                      f"  Session: {session_id}\n"
+                      f"  Model:   {cfg.model.id}\n"
+                      f"  Context: ~{tok} tokens ({pct:.1f}%)\n"
+                      f"  Turns:   {runtime.context.current_turn}  Messages: {len(messages)}")
+                continue
+            if user_input == "/model":
+                print("Available models:")
+                for mid in MODELS:
+                    m = MODELS[mid]
+                    print(f"  {mid} ({m.context_window//1000}K ctx)")
+                new_id_input = (await ptk_session.prompt_async("Enter model id: ", bottom_toolbar=_toolbar)).strip()
+                if new_id_input in MODELS:
+                    cfg.model = MODELS[new_id_input]
+                    runtime.set_model(cfg.model)
+                    print(green(f"Switched to {cfg.model.id}"))
+                else:
+                    print(red(f"Unknown model: {new_id_input}"))
+                continue
+            if user_input == "/mcp" or user_input.startswith("/mcp "):
+                await _handle_mcp_command(user_input, runtime, tool_registry)
+                continue
+
+            # User turn
+            user_msg = UserMessage(content=user_input)
+            messages.append(user_msg)
+            append_message(session_id, user_msg, redactor=redact_secrets)
+
+            abort = asyncio.Event()
+            result: AgentResult | None = None
+
+            try:
+                result = await runtime.run_turn(
+                    user_msg, signal=abort,
+                    on_event=lambda ev: render_event(ev, cfg.verbose),
                 )
-                print(dim(f"[metrics] override logged ({correction[:60]})"))
-            except Exception as exc:
-                print(dim(f"[metrics] failed: {exc}"))
-            continue
-        if user_input == "/wiki":
-            try:
-                from .wiki.metrics import summarise
-                s = summarise(cfg.cwd)
-                print(bold("── Wiki health ──"))
-                print(f"  Citations (last {s.window_days}d): {s.citations_n}")
-                print(f"  Overrides  (last {s.window_days}d): {s.overrides_n}")
-                if s.stale_areas:
-                    print("  Stale areas (days lag):")
-                    for area, days in s.stale_areas[:5]:
-                        marker = "?" if days < 0 else f"{days}d"
-                        print(f"    {area:<30}  {marker}")
-                if s.citation_sources:
-                    print("  Top cited sources:")
-                    for src, n in s.citation_sources[:5]:
-                        print(f"    {src:<40}  {n}")
-            except Exception as exc:
-                print(dim(f"[wiki] {exc}"))
-            continue
-        if user_input == "/status":
-            tok = runtime.context.estimate_tokens()
-            pct = tok / cfg.model.context_window * 100
-            print(f"{bold('── Status ──')}\n"
-                  f"  Session: {session_id}\n"
-                  f"  Model:   {cfg.model.id}\n"
-                  f"  Context: ~{tok} tokens ({pct:.1f}%)\n"
-                  f"  Turns:   {runtime.context.current_turn}  Messages: {len(messages)}")
-            continue
-        if user_input == "/model":
-            print("Available models:")
-            for mid in MODELS:
-                m = MODELS[mid]
-                print(f"  {mid} ({m.context_window//1000}K ctx)")
-            new_id_input = (await ptk_session.prompt_async("Enter model id: ", bottom_toolbar=_toolbar)).strip()
-            if new_id_input in MODELS:
-                cfg.model = MODELS[new_id_input]
-                runtime.model = cfg.model
-                runtime.context._model = cfg.model
-                system_prompt.invalidate_all()
-                print(green(f"Switched to {cfg.model.id}"))
-            else:
-                print(red(f"Unknown model: {new_id_input}"))
-            continue
+            except KeyboardInterrupt:
+                print(f"\n{yellow('Interrupted')}")
+                abort.set()
 
-        # User turn
-        user_msg = UserMessage(content=user_input)
-        messages.append(user_msg)
-        append_message(session_id, user_msg)
+            if result:
+                session_cost += result.usage.cost
+                session_turns += result.turns
+                session_cache_read += result.usage.cache_read
+                session_cache_write += result.usage.cache_write
 
-        abort = asyncio.Event()
-        result: AgentResult | None = None
+                tok = runtime.context.estimate_tokens()
+                session_ctx_pct = tok / cfg.model.context_window * 100
+                from .messages import TokenUsage as TU
+                session_usage = TU(
+                    input=0, output=0,
+                    cache_read=session_cache_read,
+                    cache_write=session_cache_write,
+                )
+                print_footer(cfg.model.id, session_cost, result.usage, result.turns, session_ctx_pct, session_usage)
+            print()  # blank line after footer
 
-        try:
-            result = await runtime.run_turn(
-                user_msg, signal=abort,
-                on_event=lambda ev: render_event(ev, cfg.verbose),
-            )
-        except KeyboardInterrupt:
-            print(f"\n{yellow('Interrupted')}")
-            abort.set()
+            if result:
+                # Persist messages — AssistantMessage.usage is self-contained now.
+                # ContextWindow advance + pressure management happened inside run_turn().
+                from .messages import AssistantMessage as AM
+                for msg in result.messages:
+                    usage = msg.usage if isinstance(msg, AM) else None
+                    messages.append(msg)
+                    append_message(session_id, msg, usage, redactor=redact_secrets)
 
-        if result:
-            session_cost += result.usage.cost
-            session_turns += result.turns
-            session_cache_read += result.usage.cache_read
-            session_cache_write += result.usage.cache_write
+                if cfg.verbose:
+                    tier = runtime.pressure_tier()
+                    if tier.value != "none":
+                        print(dim(f"[context] pressure tier: {tier.value}"))
+    finally:
+        await runtime.aclose()
 
-            tok = runtime.context.estimate_tokens()
-            session_ctx_pct = tok / cfg.model.context_window * 100
-            from .messages import TokenUsage as TU
-            session_usage = TU(
-                input=0, output=0,
-                cache_read=session_cache_read,
-                cache_write=session_cache_write,
-            )
-            print_footer(cfg.model.id, session_cost, result.usage, result.turns, session_ctx_pct, session_usage)
-        print()  # blank line after footer
-
-        if result:
-            # Persist messages — AssistantMessage.usage is self-contained now.
-            # ContextWindow advance + pressure management happened inside run_turn().
-            from .messages import AssistantMessage as AM
-            for msg in result.messages:
-                usage = msg.usage if isinstance(msg, AM) else None
-                messages.append(msg)
-                append_message(session_id, msg, usage)
-
-            if cfg.verbose:
-                tier = runtime.pressure_tier()
-                if tier.value != "none":
-                    print(dim(f"[context] pressure tier: {tier.value}"))
-
-    # End of REPL loop. If the user exited gracefully and opted into ratchet,
-    # distill insights now (skipped on KeyboardInterrupt-during-turn so we
-    # don't burn tokens on an aborted session).
-    if _exited_gracefully and cfg.auto_ratchet and len(messages) >= 2:
-        await _run_ratchet(cfg, session_id, verbose=cfg.verbose)
-
-
-# ── Ratchet helper (MVP-2.5) ──────────────────────────────────────────────────
-
-async def _run_ratchet(cfg: ChatConfig, session_id: str, *, verbose: bool) -> None:
-    """Distill the current session into raw/notes/session/<sid>.md.
-
-    Best-effort: any failure is logged in dim text; never raises out to the
-    REPL caller. The wiki subsystem is optional, so import lazily.
-    """
-    try:
-        from .anthropic_provider import AnthropicProvider
-        from .wiki.ratchet import ratchet_session
-    except Exception as exc:
-        print(dim(f"[ratchet] unavailable: {exc}"))
-        return
-
-    print(dim("[ratchet] distilling session insights …"))
-    try:
-        provider = AnthropicProvider(api_key=cfg.api_key, cwd=cfg.cwd)
-        res = await ratchet_session(cfg.cwd, session_id, provider, cfg.model)
-    except Exception as exc:
-        print(dim(f"[ratchet] failed: {exc}"))
-        return
-
-    if res.error:
-        print(dim(f"[ratchet] {res.error}"))
-        return
-    if not res.wrote:
-        print(dim("[ratchet] nothing worth saving."))
-        return
-    print(green(f"[ratchet] saved insights → {res.output_path}"))
-    if verbose and res.insights_text:
-        print(dim(res.insights_text[:400]))
 
 
 # ── Single-prompt (non-interactive) mode ──────────────────────────────────────
 
 async def _run_single_prompt(cfg: ChatConfig, prompt: str) -> None:
     tool_registry = default_registry()
-    system_prompt = build_system_prompt(cfg, tool_registry)
-    runtime = AgentRuntime(
+    system_prompt = await build_chat_prompt_async(cfg, tool_registry)
+    mcp_configs = _resolve_mcp_configs(cfg)
+    runtime = await build_runtime_with_mcp(
         model=cfg.model,
         system_prompt=system_prompt,
         tool_registry=tool_registry,
         cwd=cfg.cwd,
+        mcp_configs=mcp_configs,
         api_key=cfg.api_key,
         thinking=cfg.thinking,
         max_turns=cfg.max_turns,
         max_tokens=cfg.model.max_tokens,
     )
-    user_msg = UserMessage(content=prompt)
-    result = await runtime.run_turn(
-        user_msg,
-        on_event=lambda ev: render_event(ev, cfg.verbose),
-    )
-    if result:
-        ctx_pct = (result.usage.input + result.usage.cache_read) / cfg.model.context_window * 100
-        print_footer(cfg.model.id, result.usage.cost, result.usage, result.turns, ctx_pct)
+    async with runtime:
+        user_msg = UserMessage(content=prompt)
+        result = await runtime.run_turn(
+            user_msg,
+            on_event=lambda ev: render_event(ev, cfg.verbose),
+        )
+        if result:
+            ctx_pct = (result.usage.input + result.usage.cache_read) / cfg.model.context_window * 100
+            print_footer(cfg.model.id, result.usage.cost, result.usage, result.turns, ctx_pct)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -526,17 +574,26 @@ def _run_sessions_subcommand(argv: list[str]) -> int:
 
 
 def main() -> None:
-    # Sub-command dispatch (no API key required for `sessions` / `wiki`).
+    # Sub-command dispatch (no API key required for `sessions`).
     if len(sys.argv) > 1 and sys.argv[1] == "sessions":
         sys.exit(_run_sessions_subcommand(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "wiki":
-        # Lazy import — wiki module is optional and self-contained.
-        try:
-            from .wiki.gather.cli import _main as _wiki_main
-        except ImportError:  # pragma: no cover
-            print(red("wiki subcommand not available (import failed)"), file=sys.stderr)
-            sys.exit(1)
-        sys.exit(_wiki_main(sys.argv[2:]))
+        # Deprecation shim (one release). The wiki was extracted to a skill
+        # at .claude/skills/agent-forge-wiki/ in agent-forge 1.1; the CLI
+        # subcommand goes away in 1.2.
+        print(
+            red("agent-forge wiki has moved to a skill."),
+            file=sys.stderr,
+        )
+        print(
+            dim(
+                "Run instead:\n"
+                "  python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py "
+                + " ".join(sys.argv[2:])
+            ),
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     import argparse
 
@@ -548,16 +605,28 @@ def main() -> None:
     parser.add_argument("--resume", dest="resume_id")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--prompt", help="Run a single prompt (non-interactive)")
+    # ── MCP (Phase H) ──────────────────────────────────────────────────
+    # Default behavior: MCP IS enabled but only loads servers from
+    # ~/.agent-forge/mcp.toml and <cwd>/.agent-forge/mcp.toml. If neither
+    # file exists, no servers are loaded — silent no-op. `--no-mcp` forces
+    # the file loader to be skipped; ad-hoc `--mcp-server` still works.
+    mcp_group = parser.add_mutually_exclusive_group()
+    mcp_group.add_argument(
+        "--mcp", dest="mcp_enabled", action="store_true", default=True,
+        help="Load MCP server configs from ~/.agent-forge/mcp.toml (default).",
+    )
+    mcp_group.add_argument(
+        "--no-mcp", dest="mcp_enabled", action="store_false",
+        help="Skip the MCP config-file loader. --mcp-server flags still work.",
+    )
+    parser.add_argument(
+        "--mcp-server", action="append", default=[], metavar="SPEC",
+        help="Add an ad-hoc MCP server. Format: 'name=command [args...]'. Repeatable.",
+    )
     parser.add_argument(
         "--debug-stream",
         action="store_true",
         help="Log raw provider stream events with monotonic timestamps to stderr (diagnostic).",
-    )
-    parser.add_argument(
-        "--ratchet",
-        action="store_true",
-        help="On graceful exit, distill session insights into "
-             ".agent-forge/raw/notes/session/<sid>.md (one extra LLM call).",
     )
     args = parser.parse_args()
 
@@ -579,6 +648,15 @@ def main() -> None:
         print(red(str(e)), file=sys.stderr)
         sys.exit(1)
 
+    # Parse --mcp-server SPECs (repeatable) into MCPServerConfig list
+    mcp_servers = []
+    for spec in args.mcp_server:
+        try:
+            mcp_servers.append(parse_mcp_server_spec(spec))
+        except ValueError as exc:
+            print(red(f"--mcp-server: {exc}"), file=sys.stderr)
+            sys.exit(1)
+
     cfg = ChatConfig(
         api_key=api_key,
         model=model,
@@ -587,7 +665,8 @@ def main() -> None:
         verbose=args.verbose,
         continue_session=args.continue_session,
         resume_id=args.resume_id,
-        auto_ratchet=args.ratchet,
+        mcp_enabled=args.mcp_enabled,
+        mcp_servers=mcp_servers,
     )
 
     if args.prompt:

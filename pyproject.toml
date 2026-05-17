@@ -10,6 +10,12 @@ dependencies = [
     "rich>=13.0",
 ]
 
+[project.optional-dependencies]
+# MCP (Model Context Protocol) integration — Phase G of the ideal-design
+# plan. Tools come from a stdio MCP server (e.g. filesystem, github,
+# postgres). Install with `uv pip install -e .[mcp]`.
+mcp = ["mcp>=1.0"]
+
 [project.scripts]
 agent-forge = "agent_forge.chat:main"
 

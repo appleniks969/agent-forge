@@ -1,6 +1,6 @@
 # Getting started
 
-Install agent-forge, run your first session, and set up the wiki — under 10 minutes.
+Install agent-forge, run your first session, and set up the wiki skill — under 10 minutes.
 
 ## Prerequisites
 
@@ -71,7 +71,32 @@ A few things to try in your first session:
 - `/remember <text>` — save `<text>` to project `memory.md`. Memory is auto-injected into every future session's system prompt, so the agent picks up project conventions without you re-explaining them.
 - `/quit` (or `Ctrl-D`) — exit cleanly.
 
-> **Sample transcript:** _(TODO — paste a real capture of one short REPL session here so new users know what to expect)_
+Here's what a short session looks like end-to-end:
+
+```text
+$ cd ~/projects/payments-api
+$ agent-forge
+
+  Model: claude-sonnet-4-6 · 1000K ctx · /quit /clear /status /remember /mcp
+  cwd:   ~/projects/payments-api  (branch: main)
+
+> what does the retry logic do in webhooks.py?
+
+  Read webhooks.py (lines 1-120)
+  Grep "retry" in src/
+
+  The webhook handler retries failed deliveries up to 3 times with
+  exponential backoff (1s, 2s, 4s). The retry budget is per-event, not
+  per-endpoint — see line 87. Failures after the 3rd attempt are written
+  to the dead_letter table.
+
+  │ 12.3K tokens · 2 turns · $0.012
+
+> /remember webhook retries are per-event, max 3, exp backoff 1/2/4s
+  saved to .agent-forge/memory.md
+
+> /quit
+```
 
 For the full slash command reference, see [FAQ → Slash commands](faq.md#slash-command-reference).
 
@@ -83,25 +108,38 @@ agent-forge --prompt "summarise the failing tests and suggest a fix"
 
 The agent runs, prints its final answer, and exits. No REPL.
 
-## Set up the wiki (recommended, ~30 seconds)
+## Set up the wiki skill (recommended)
 
-The wiki is a per-repo knowledge layer that gathers signal from your codebase (commits, PRs, hot files, hand-written notes) and **auto-injects it into every chat turn's system prompt**. The agent shows up to your repo already knowing what changed recently and where the hot files are.
+The **agent-forge-wiki skill** is a per-repo knowledge layer that gathers
+signal from your codebase (commits, PRs, hot files, hand-written notes)
+into schema'd bundles, and LLM-compiles narrative cards. The skill ships
+in this repo at `.claude/skills/agent-forge-wiki/` and is auto-discovered
+by Claude Code.
 
 ```bash
 cd ~/your-repo
-agent-forge wiki init     # auto-detects packages/* or src/* → contexts.yaml
-agent-forge wiki gather   # pulls repo signal into .agent-forge/raw/
-agent-forge               # chat as usual — WIKI section is now in the prompt
+
+# One-time area detection
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py init
+
+# Pull repo signal (incremental on subsequent runs)
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py gather --since 2026-02-10
+
+# Synthesise narrative cards (LLM call)
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py compile
+
+# Chat — agents discover the skill via SKILL.md
+agent-forge
 ```
 
-That's the whole minimum-viable flow. Subsequent `wiki gather` runs are incremental.
+The wiki is **optional** — every chat turn works without it.
 
-The wiki is **optional** — every chat turn works without it. If you skip this step, the agent just won't have the auto-injected repo context until you add it.
-
-For the full wiki workflow (compile, ratchet, compact, maintain), see the [Wiki section in the top-level README](../../README.md#wiki--repository-knowledge).
+For the full wiki workflow (compile, compact, maintain) and the skill's
+internal architecture, see the
+[Wiki section in the top-level README](../../README.md#wiki-skill).
 
 ## What's next
 
 - [Configuration](configuration.md) — pick a model, tune thinking modes, manage memory
+- [Team setup](team-setup.md) — secrets distribution, shared MCP config, CI usage, recommended defaults
 - [FAQ](faq.md) — slash command reference, troubleshooting
-- **Autonomous mode** — unattended, git-isolated execution with verify-and-PR delivery. See the [Autonomous Mode section in the top-level README](../../README.md#autonomous-mode).

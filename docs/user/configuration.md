@@ -25,6 +25,20 @@ Make it permanent by adding the export to `~/.zshrc` or `~/.bashrc`.
 
 > **Don't share OAuth tokens.** They are personal credentials tied to an individual Anthropic account.
 
+### Precedence
+
+If both variables are set, **`CLAUDE_CODE_OAUTH_TOKEN` wins**. agent-forge
+checks OAuth first, then falls back to the API key. There is no flag to
+override this — unset the OAuth variable in shells where you want the API
+key to take effect:
+
+```bash
+unset CLAUDE_CODE_OAUTH_TOKEN
+```
+
+For team rollout (shared API key + per-developer OAuth fallback), see
+[Team setup → Secrets distribution](team-setup.md#secrets-distribution).
+
 If neither variable is set you'll see:
 
 ```
@@ -79,15 +93,6 @@ agent-forge keeps a `memory.md` file of project-specific preferences and convent
 | How do I reset? | Delete the file: `rm .agent-forge/memory.md` (project) or `rm ~/.agent-forge/memory.md` (global). |
 | What's the size cap? | ~2 K tokens per file. Older entries are dropped when the cap is hit. Duplicate entries (60-char prefix match) are deduplicated automatically. |
 
-### Session ratchet (separate from memory)
-
-If you want the agent to distil per-session insights, opt into the **ratchet**: it writes a structured note to `.agent-forge/raw/notes/session/<sid>.md` and costs one LLM call per session.
-
-- `agent-forge --ratchet` — auto-runs on clean exit (`/quit`, `/exit`, `/q`, `Ctrl-D`). Not run on `Ctrl-C` or crash.
-- `/ratchet` — run on demand mid-session.
-
-Ratchet output feeds the wiki (the `present` stage reads `raw/notes/session/`), not the system-prompt memory section.
-
 ## Sessions
 
 Every interactive session is auto-saved as a JSONL log under `~/.agent-forge/sessions/`.
@@ -95,6 +100,15 @@ Every interactive session is auto-saved as a JSONL log under `~/.agent-forge/ses
 ```bash
 agent-forge --continue        # resume the last session for this directory
 agent-forge --resume a3f9     # resume a specific session by ID prefix
+```
+
+List or replay sessions without entering the REPL:
+
+```bash
+agent-forge sessions ls               # sessions for this cwd
+agent-forge sessions ls --all         # across all cwds
+agent-forge sessions show 1           # by 1-based index
+agent-forge sessions show a3f9        # by session-ID prefix
 ```
 
 ## CLI flags reference
@@ -107,14 +121,15 @@ agent-forge --resume a3f9     # resume a specific session by ID prefix
 | `--continue` | — | Resume the most recent session for this `--cwd` |
 | `--resume <id>` | — | Resume a specific session by ID prefix |
 | `--prompt <text>` | — | Run a single prompt non-interactively, then exit |
-| `--ratchet` | off | On clean exit, distil the session into `.agent-forge/raw/notes/session/<sid>.md` via one LLM call |
 | `--verbose` | off | Print context-pressure tier changes |
 | `--debug-stream` | off | Log raw provider stream events with timestamps to stderr (diagnostic) |
+| `--mcp` / `--no-mcp` | `--mcp` | Load MCP server configs from `~/.agent-forge/mcp.toml` and `<cwd>/.agent-forge/mcp.toml`. See [mcp.md](mcp.md). |
+| `--mcp-server SPEC` | — | Add an ad-hoc MCP server. Repeatable. Format: `name=command [args…]` |
 | `--help` | — | Show help and exit |
 
-## Wiki configuration
+## Wiki-skill configuration
 
-The wiki reads `.agent-forge/contexts.yaml` for area definitions:
+The wiki skill reads `.agent-forge/contexts.yaml` for area definitions:
 
 ```yaml
 areas:
@@ -127,8 +142,20 @@ areas:
       - "src/auth/**"
 ```
 
-Without `contexts.yaml`, the wiki still works — hot files just appear as one flat list instead of grouped by area. `agent-forge wiki init` generates a starter file by auto-detecting `packages/*/`, `apps/*/`, `services/*/`, `src/*/`, or top-level dirs.
+Without `contexts.yaml`, the skill still works — hot files appear as one
+flat list instead of grouped by area.
 
-All wiki state lives under `.agent-forge/` in the target repo. Add it to `.gitignore` unless you want to commit curated knowledge for your team.
+Generate a starter file:
 
-For the full wiki workflow, see the [Wiki section in the top-level README](../../README.md#wiki--repository-knowledge).
+```bash
+python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py init
+```
+
+This auto-detects `packages/*/`, `apps/*/`, `services/*/`, `src/*/`, or
+top-level dirs.
+
+All wiki state lives under `.agent-forge/` in the target repo. Add it to
+`.gitignore` unless you want to commit curated knowledge for your team.
+
+For the full wiki workflow, see the
+[Wiki section in the top-level README](../../README.md#wiki-skill).

@@ -156,3 +156,54 @@ async def test_bash_tool_timeout_returns_error(tmp_path):
     )
     assert res.is_error
     assert "timed out" in res.content.lower()
+
+
+# ── EditTool overlap detection (two-phase commit safety) ─────────────────────
+
+@pytest.mark.asyncio
+async def test_edit_tool_rejects_identical_old_strings(tmp_path):
+    """Two edits targeting the exact same single-occurrence text are ambiguous."""
+    p = tmp_path / "f.txt"
+    p.write_text("only-once\n")
+    tool = EditTool()
+    res = await tool.execute({
+        "path": "f.txt",
+        "edits": [
+            {"old_string": "only-once", "new_string": "hi"},
+            {"old_string": "only-once", "new_string": "hey"},
+        ],
+    }, cwd=str(tmp_path))
+    assert res.is_error is True
+    assert "identical" in res.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_edit_tool_rejects_overlapping_old_strings(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("foobar baz\n")
+    tool = EditTool()
+    res = await tool.execute({
+        "path": "f.txt",
+        "edits": [
+            {"old_string": "foobar", "new_string": "X"},
+            {"old_string": "foo", "new_string": "Y"},
+        ],
+    }, cwd=str(tmp_path))
+    assert res.is_error is True
+    assert "overlap" in res.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_edit_tool_allows_disjoint_edits(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("alpha beta gamma\n")
+    tool = EditTool()
+    res = await tool.execute({
+        "path": "f.txt",
+        "edits": [
+            {"old_string": "alpha", "new_string": "A"},
+            {"old_string": "gamma", "new_string": "G"},
+        ],
+    }, cwd=str(tmp_path))
+    assert res.is_error is False
+    assert p.read_text() == "A beta G\n"

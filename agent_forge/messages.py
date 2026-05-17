@@ -20,12 +20,19 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 # ── Content blocks ────────────────────────────────────────────────────────────
+#
+# Each block carries a tokens() method so token estimation is local to the type
+# rather than a giant isinstance() ladder elsewhere. Adding a new ContentBlock
+# subclass forces an implementor decision on tokens() — desirable.
 
 @dataclass(frozen=True)
 class TextContent:
     """A plain-text content block. Used inside both user and assistant messages."""
     text: str
     type: Literal["text"] = field(default="text", init=False)
+
+    def tokens(self) -> int:
+        return len(self.text) // 4
 
 @dataclass(frozen=True)
 class ThinkingContent:
@@ -37,6 +44,9 @@ class ThinkingContent:
     thinking: str
     signature: str | None = None
     type: Literal["thinking"] = field(default="thinking", init=False)
+
+    def tokens(self) -> int:
+        return len(self.thinking) // 4
 
 @dataclass(frozen=True)
 class ToolCallContent:
@@ -53,12 +63,21 @@ class ToolCallContent:
     def __post_init__(self) -> None:
         object.__setattr__(self, "arguments", dict(self.arguments))
 
+    def tokens(self) -> int:
+        return (len(self.name) + len(str(self.arguments))) // 4
+
 @dataclass(frozen=True)
 class ImageContent:
     """Base64-encoded image for vision tool results."""
     media_type: str          # "image/png" | "image/jpeg" | "image/webp" | "image/gif"
     data: str                # base64-encoded bytes
     type: Literal["image"] = field(default="image", init=False)
+
+    def tokens(self) -> int:
+        # Anthropic charges ~1500 tokens per image at standard resolution.
+        # This is a rough fixed estimate; the real provider count comes back
+        # in TokenUsage and replaces this via sync_total_tokens().
+        return 1500
 
 ContentBlock = TextContent | ThinkingContent | ToolCallContent | ImageContent
 
@@ -167,13 +186,7 @@ class SystemPromptSection:
 
     `cache_control` is an *advisory hint* that the active provider may map to
     a vendor-specific cache breakpoint (Anthropic ephemeral cache_control,
-    OpenAI prompt-cache, etc.) — or may ignore entirely. The name is kept for
-    backward compatibility; new code should prefer the alias `hint_cache`.
+    OpenAI prompt-cache, etc.) — or may ignore entirely.
     """
     text: str
     cache_control: bool = False
-
-    @property
-    def hint_cache(self) -> bool:
-        """Forward-compatible alias for cache_control."""
-        return self.cache_control
