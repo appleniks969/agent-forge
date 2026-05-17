@@ -6,15 +6,32 @@ Available inside the interactive REPL:
 
 | Command | Effect |
 |---|---|
-| `/quit` · `/exit` · `/q` | Exit the REPL cleanly. (With `--ratchet`, also runs the session ratchet on the way out.) |
+| `/quit` · `/exit` · `/q` | Exit the REPL cleanly. |
 | `/clear` | Clear the current conversation and context window |
 | `/status` | Show session ID, current model, token count, turn count |
 | `/model` | Switch model interactively without restarting |
 | `/remember <text>` | Save `<text>` to project `memory.md` so it persists across sessions |
 | `/sessions` | List recent sessions for the current working directory |
 | `/resume <n\|id>` | Switch to another session by index (from `/sessions`) or ID prefix |
+| `/mcp` | Show MCP server status (connected / failed / closed) — see [mcp.md](mcp.md) |
+| `/mcp tools` | List MCP tools currently registered, grouped by server |
+| `/mcp reconnect [name]` | Reconnect one MCP server or all of them |
 
 > **Tip:** `Ctrl-C` interrupts a running agent turn. `Ctrl-D` (or `/quit`) exits cleanly.
+
+---
+
+## Non-REPL subcommands
+
+A few utilities live outside the REPL, as `agent-forge` subcommands:
+
+| Command | Effect |
+|---|---|
+| `agent-forge sessions ls` | List sessions persisted for the current `--cwd` |
+| `agent-forge sessions ls --all` | List sessions across all working directories |
+| `agent-forge sessions show <n\|id>` | Replay a session by 1-based index or session-ID prefix |
+
+Use these from CI or scripts when you don't want to open the REPL.
 
 ---
 
@@ -103,7 +120,7 @@ Yes. Tool calls are sandboxed to the working directory. The agent sends conversa
 
 - `Ctrl-C` interrupts the current turn immediately.
 - All tool paths are sandboxed to `--cwd` — the agent can't read or write outside it.
-- `Edit` and `Write` overwrite files without confirmation. Commit your work before risky tasks, or use [autonomous mode](../../README.md#autonomous-mode), which works in a throwaway git worktree.
+- `Edit` and `Write` overwrite files without confirmation. Commit your work before risky tasks.
 
 ### Tool output is truncated
 
@@ -113,19 +130,4 @@ Tool results are capped at 50 KB. For `Read`, use `offset` and `limit` to page t
 
 - `--model claude-haiku-4-5` for simple tasks
 - `--thinking off` when reasoning isn't needed
-- In autonomous mode (Python API), set `AutonomousConfig(max_turns=10)` (or lower) to prevent runaway loops
 - The system prompt is cached automatically across turns
-
-### `Working tree has uncommitted changes` (autonomous mode)
-
-Autonomous mode requires a clean working tree. Commit or stash:
-
-```bash
-git stash
-# run autonomous task
-git stash pop
-```
-
-### The agent hits `max_turns` (autonomous mode)
-
-It reached the turn limit without finishing. Either raise `max_turns` in `AutonomousConfig` (default: 100) or break the task into smaller pieces.

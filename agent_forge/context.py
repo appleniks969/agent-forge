@@ -20,9 +20,10 @@ import enum
 import logging
 from dataclasses import dataclass
 
+from .events import ToolCallRecord
 from .messages import (
-    AssistantMessage, ImageContent, Message,
-    TextContent, ThinkingContent, ToolResultMessage, UserMessage,
+    AssistantMessage, ImageContent, Message, ToolCallContent,
+    TextContent, ThinkingContent, ToolResult, ToolResultMessage, UserMessage,
 )
 from .models import Model
 
@@ -47,6 +48,42 @@ def assess_pressure(tokens: int, model: Model) -> PressureTier:
     if tokens > ABSOLUTE_P4  or ratio > 0.85: return PressureTier.P4
     return PressureTier.NONE
 
+# ── Tool-call reconstruction (session resume) ─────────────────────────────────
+
+def _reconstruct_tool_calls(turn_assistant_msgs: list[Message]) -> list[ToolCallRecord]:
+    """Walk a recovered turn's assistant + tool_result messages and rebuild
+    the ToolCallRecord list. Matches each ToolCallContent block to its
+    ToolResultMessage by tool_call_id. Used by ContextWindow.init_from_existing()
+    so resumed sessions don't lose action-log fidelity on later eviction."""
+    result_by_id: dict[str, ToolResultMessage] = {}
+    for m in turn_assistant_msgs:
+        if isinstance(m, ToolResultMessage):
+            result_by_id[m.tool_call_id] = m
+
+    out: list[ToolCallRecord] = []
+    for m in turn_assistant_msgs:
+        if not isinstance(m, AssistantMessage):
+            continue
+        for blk in m.content:
+            if not isinstance(blk, ToolCallContent):
+                continue
+            tr_msg = result_by_id.get(blk.id)
+            if tr_msg is not None:
+                content_str = (
+                    tr_msg.content if isinstance(tr_msg.content, str)
+                    else _tool_result_text(tr_msg)
+                )
+                result = ToolResult(content=content_str, is_error=tr_msg.is_error)
+            else:
+                # Orphan tool_call (no matching result) — shouldn't happen post-loop's
+                # abort-completeness fix, but be defensive on resume.
+                result = ToolResult(content="", is_error=False)
+            out.append(ToolCallRecord(
+                id=blk.id, name=blk.name, args=blk.arguments, result=result,
+            ))
+    return out
+
+
 # ── Token estimation ──────────────────────────────────────────────────────────
 
 def _tool_result_text(msg: ToolResultMessage) -> str:
@@ -63,24 +100,18 @@ def _tool_result_text(msg: ToolResultMessage) -> str:
     return " ".join(parts)
 
 def estimate_tokens(msg: Message) -> int:
-    """Chars / 4 heuristic. Replaced by sync_total_tokens() after each API call."""
+    """Chars / 4 heuristic. Replaced by sync_total_tokens() after each API call.
+
+    Delegates to ContentBlock.tokens() so block-specific knowledge lives on
+    the block type, not in a giant isinstance ladder here.
+    """
     if isinstance(msg, UserMessage):
         content = msg.content
         if isinstance(content, str):
             return len(content) // 4
-        # Mixed TextContent / ImageContent — count text chars/4; flat 200 tokens per image.
-        total = 0
-        for c in content:
-            if isinstance(c, TextContent):
-                total += len(c.text) // 4
-            elif isinstance(c, ImageContent):
-                total += 200
-        return total
+        return sum(blk.tokens() for blk in content)
     elif isinstance(msg, AssistantMessage):
-        total = 0
-        for blk in msg.content:
-            total += len(getattr(blk, "text", "") or getattr(blk, "thinking", "") or str(getattr(blk, "arguments", ""))) // 4
-        return total
+        return sum(blk.tokens() for blk in msg.content)
     else:  # ToolResultMessage
         return len(_tool_result_text(msg)) // 4
 
@@ -416,11 +447,23 @@ class ContextWindow:
                 turn=self.current_turn,
                 user_message=turn_msgs[0],
                 assistant_messages=list(turn_msgs[1:]),
-                tool_calls=[],
+                tool_calls=_reconstruct_tool_calls(turn_msgs[1:]),
                 tokens=estimate_tokens_list(turn_msgs),
             ))
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def set_model(self, model: Model) -> None:
+        """Swap the model descriptor. Invalidates the synced API token count
+        because the previous total was for the old model's tokenizer/window;
+        the next sync_total_tokens() call will replace it."""
+        self._model = model
+        self._synced_total = None
+
+    def set_budget(self, budget: "ContextBudget") -> None:
+        """Swap the eviction budget. No state invalidation needed — the next
+        apply_eviction() call honours the new thresholds."""
+        self._budget = budget
 
     def clear(self) -> None:
         self._action_log = []

@@ -2,8 +2,7 @@
 _subprocess.py — async subprocess utility with abort-signal propagation.
 
 Private leaf module (no internal imports). One seam for every subprocess call
-in the codebase: BashTool, GrepTool's rg fallback, and every git/gh shell-out
-in autonomous.py.
+in the codebase: BashTool and GrepTool's rg fallback.
 
 Why this exists
 ---------------

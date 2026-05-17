@@ -18,10 +18,13 @@ oldest bullets first.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
+import re
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +32,90 @@ from .messages import (
     AssistantMessage, ImageContent, Message, TextContent, ThinkingContent,
     ToolCallContent, ToolResultMessage, TokenUsage, UserMessage, ZERO_USAGE,
 )
+
+# ── Redaction ─────────────────────────────────────────────────────────────────
+#
+# Redactors are pure Message → Message transforms applied at write time, before
+# JSONL serialisation. They DO mutate the persisted on-disk record (unlike
+# Hooks.before_llm_call which is wire-only and never touches the JSONL).
+#
+# The default redact_secrets() masks high-confidence patterns: API key prefixes
+# (sk-, gh[pso]_) and JWT-shaped strings. Add your own by composing with
+# functools.reduce or chaining lambdas.
+
+Redactor = Callable[[Message], Message]
+
+_SECRET_PATTERNS = [
+    # Anthropic keys (sk-ant-…), OpenAI keys (sk-…), generic provider-style sk- keys
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
+    # GitHub tokens: ghp_, gho_, ghs_, ghu_, ghr_  (Personal / OAuth / Server / User / Refresh)
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    # JWT (header.payload.signature) — three base64url segments separated by dots
+    re.compile(r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"),
+]
+
+_REDACTED = "[REDACTED]"
+
+
+def _redact_string(s: str) -> str:
+    out = s
+    for pat in _SECRET_PATTERNS:
+        out = pat.sub(_REDACTED, out)
+    return out
+
+
+def redact_secrets(msg: Message) -> Message:
+    """Default Redactor: mask API keys (sk-, sk-ant-, gh[pousr]_) and JWTs.
+
+    Applied to string content and to TextContent.text inside structured
+    UserMessage / ToolResultMessage tuples. Other block types (ImageContent,
+    ToolCallContent.arguments, ThinkingContent) are left untouched because
+    they shouldn't carry secrets in normal use — extend this function if your
+    workload differs.
+    """
+    if isinstance(msg, UserMessage):
+        if isinstance(msg.content, str):
+            new = _redact_string(msg.content)
+            return msg if new == msg.content else dataclasses.replace(msg, content=new)
+        new_blocks = _redact_blocks(msg.content)
+        return msg if new_blocks is msg.content else dataclasses.replace(msg, content=new_blocks)
+
+    if isinstance(msg, ToolResultMessage):
+        if isinstance(msg.content, str):
+            new = _redact_string(msg.content)
+            return msg if new == msg.content else dataclasses.replace(msg, content=new)
+        new_blocks = _redact_blocks(msg.content)
+        return msg if new_blocks is msg.content else dataclasses.replace(msg, content=new_blocks)
+
+    if isinstance(msg, AssistantMessage):
+        new_blocks = []
+        changed = False
+        for blk in msg.content:
+            if isinstance(blk, TextContent):
+                new_text = _redact_string(blk.text)
+                if new_text != blk.text:
+                    new_blocks.append(dataclasses.replace(blk, text=new_text))
+                    changed = True
+                    continue
+            new_blocks.append(blk)
+        return msg if not changed else dataclasses.replace(msg, content=tuple(new_blocks))
+
+    return msg
+
+
+def _redact_blocks(blocks):
+    new = []
+    changed = False
+    for blk in blocks:
+        if isinstance(blk, TextContent):
+            new_text = _redact_string(blk.text)
+            if new_text != blk.text:
+                new.append(dataclasses.replace(blk, text=new_text))
+                changed = True
+                continue
+        new.append(blk)
+    return tuple(new) if changed else blocks
 
 # ── Session directory ─────────────────────────────────────────────────────────
 
@@ -99,12 +186,27 @@ def append_metadata(session_id: str, model_id: str, cwd: str) -> None:
     except Exception:
         pass
 
-def append_message(session_id: str, msg: Message, usage: TokenUsage | None = None) -> str:
+def append_message(
+    session_id: str,
+    msg: Message,
+    usage: TokenUsage | None = None,
+    *,
+    redactor: Redactor | None = None,
+) -> str:
+    """Append a message to the session JSONL.
+
+    If ``redactor`` is supplied, the message is transformed before
+    serialisation. The redactor runs at the **write boundary** — the in-memory
+    Message (and what the LLM saw on the wire) is unchanged; only the on-disk
+    record is masked. Pass ``redactor=redact_secrets`` for the default mask of
+    API keys + JWTs.
+    """
+    to_write = redactor(msg) if redactor is not None else msg
     msg_id = new_id()
     entry: dict = {
         "type": "message", "id": msg_id,
         "ts": int(time.time() * 1000),
-        "message": _msg_to_dict(msg),
+        "message": _msg_to_dict(to_write),
     }
     if usage:
         entry["usage"] = {
@@ -256,8 +358,10 @@ def resolve_session_spec(spec: str, cwd: str) -> str | None:
     if not spec:
         return None
 
-    # Numeric index → cwd-scoped listing
-    if spec.isdigit():
+    # Numeric index → cwd-scoped listing (only for short specs; a long
+    # all-digit string is almost certainly a session-id prefix, not an
+    # index — session ids are hex, so prefixes can be all-digit by chance).
+    if spec.isdigit() and len(spec) < 4:
         i = int(spec)
         metas = list_sessions_for_cwd(cwd)
         if 1 <= i <= len(metas):

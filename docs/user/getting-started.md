@@ -71,7 +71,32 @@ A few things to try in your first session:
 - `/remember <text>` — save `<text>` to project `memory.md`. Memory is auto-injected into every future session's system prompt, so the agent picks up project conventions without you re-explaining them.
 - `/quit` (or `Ctrl-D`) — exit cleanly.
 
-> **Sample transcript:** _(TODO — paste a real capture of one short REPL session here so new users know what to expect)_
+Here's what a short session looks like end-to-end:
+
+```text
+$ cd ~/projects/payments-api
+$ agent-forge
+
+  Model: claude-sonnet-4-6 · 1000K ctx · /quit /clear /status /remember /mcp
+  cwd:   ~/projects/payments-api  (branch: main)
+
+> what does the retry logic do in webhooks.py?
+
+  Read webhooks.py (lines 1-120)
+  Grep "retry" in src/
+
+  The webhook handler retries failed deliveries up to 3 times with
+  exponential backoff (1s, 2s, 4s). The retry budget is per-event, not
+  per-endpoint — see line 87. Failures after the 3rd attempt are written
+  to the dead_letter table.
+
+  │ 12.3K tokens · 2 turns · $0.012
+
+> /remember webhook retries are per-event, max 3, exp backoff 1/2/4s
+  saved to .agent-forge/memory.md
+
+> /quit
+```
 
 For the full slash command reference, see [FAQ → Slash commands](faq.md#slash-command-reference).
 
@@ -112,10 +137,9 @@ The wiki is **optional** — every chat turn works without it.
 For the full wiki workflow (compile, compact, maintain) and the skill's
 internal architecture, see the
 [Wiki section in the top-level README](../../README.md#wiki-skill).
-Decision rationale: [ADR-005](../adr/ADR-005-wiki-extracted-as-skill.md).
 
 ## What's next
 
 - [Configuration](configuration.md) — pick a model, tune thinking modes, manage memory
+- [Team setup](team-setup.md) — secrets distribution, shared MCP config, CI usage, recommended defaults
 - [FAQ](faq.md) — slash command reference, troubleshooting
-- **Autonomous mode** — unattended, git-isolated execution with verify-and-PR delivery. See the [Autonomous Mode section in the top-level README](../../README.md#autonomous-mode).

@@ -25,6 +25,20 @@ Make it permanent by adding the export to `~/.zshrc` or `~/.bashrc`.
 
 > **Don't share OAuth tokens.** They are personal credentials tied to an individual Anthropic account.
 
+### Precedence
+
+If both variables are set, **`CLAUDE_CODE_OAUTH_TOKEN` wins**. agent-forge
+checks OAuth first, then falls back to the API key. There is no flag to
+override this — unset the OAuth variable in shells where you want the API
+key to take effect:
+
+```bash
+unset CLAUDE_CODE_OAUTH_TOKEN
+```
+
+For team rollout (shared API key + per-developer OAuth fallback), see
+[Team setup → Secrets distribution](team-setup.md#secrets-distribution).
+
 If neither variable is set you'll see:
 
 ```
@@ -88,6 +102,15 @@ agent-forge --continue        # resume the last session for this directory
 agent-forge --resume a3f9     # resume a specific session by ID prefix
 ```
 
+List or replay sessions without entering the REPL:
+
+```bash
+agent-forge sessions ls               # sessions for this cwd
+agent-forge sessions ls --all         # across all cwds
+agent-forge sessions show 1           # by 1-based index
+agent-forge sessions show a3f9        # by session-ID prefix
+```
+
 ## CLI flags reference
 
 | Flag | Default | Description |
@@ -100,6 +123,8 @@ agent-forge --resume a3f9     # resume a specific session by ID prefix
 | `--prompt <text>` | — | Run a single prompt non-interactively, then exit |
 | `--verbose` | off | Print context-pressure tier changes |
 | `--debug-stream` | off | Log raw provider stream events with timestamps to stderr (diagnostic) |
+| `--mcp` / `--no-mcp` | `--mcp` | Load MCP server configs from `~/.agent-forge/mcp.toml` and `<cwd>/.agent-forge/mcp.toml`. See [mcp.md](mcp.md). |
+| `--mcp-server SPEC` | — | Add an ad-hoc MCP server. Repeatable. Format: `name=command [args…]` |
 | `--help` | — | Show help and exit |
 
 ## Wiki-skill configuration

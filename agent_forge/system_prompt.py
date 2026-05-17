@@ -31,7 +31,8 @@ class SectionName(enum.StrEnum):
     IDENTITY    = "identity"     # group 0 (STABLE)
     TOOLS       = "tools"        # group 0
     GUIDELINES  = "guidelines"   # group 0
-    AGENTS_DOC  = "agents_doc"   # group 1 (SESSION-STABLE)
+    MCP_TOOLS   = "mcp_tools"    # group 1 (SESSION-STABLE — Phase I)
+    AGENTS_DOC  = "agents_doc"   # group 1
     SKILLS      = "skills"       # group 1
     MEMORY      = "memory"       # group 1
     REPO_MAP    = "repo_map"     # group 2 (SESSION-STABLE, separate breakpoint)
@@ -40,18 +41,27 @@ class SectionName(enum.StrEnum):
 
     @property
     def order(self) -> int:
-        """Stable rendering position of this section in the final prompt (0…8)."""
+        """Stable rendering position of this section in the final prompt (0…9)."""
         return {
             "identity": 0, "tools": 1, "guidelines": 2,
-            "agents_doc": 3, "skills": 4, "memory": 5,
-            "repo_map": 6, "environment": 7, "custom": 8,
+            "mcp_tools": 3,
+            "agents_doc": 4, "skills": 5, "memory": 6,
+            "repo_map": 7, "environment": 8, "custom": 9,
         }[self.value]
 
     @property
     def cache_group(self) -> int:
-        """Anthropic cache group: 0 (stable), 1 (session-stable), 2 (repo_map), 3 (volatile, never cached)."""
+        """Anthropic cache group: 0 (stable), 1 (session-stable), 2 (repo_map), 3 (volatile, never cached).
+
+        MCP_TOOLS sits in group 1 alongside AGENTS_DOC/SKILLS/MEMORY: stable
+        within one REPL session but invalidated on /clear or `/mcp reconnect`.
+        Rendered before AGENTS_DOC so MEMORY remains the last group-1 section
+        and keeps the existing cache breakpoint (no behavioural change for
+        sessions without MCP).
+        """
         if self in (SectionName.IDENTITY, SectionName.TOOLS, SectionName.GUIDELINES): return 0
-        if self in (SectionName.AGENTS_DOC, SectionName.SKILLS, SectionName.MEMORY): return 1
+        if self in (SectionName.MCP_TOOLS, SectionName.AGENTS_DOC,
+                    SectionName.SKILLS, SectionName.MEMORY): return 1
         if self == SectionName.REPO_MAP: return 2
         return 3  # VOLATILE
 
@@ -163,8 +173,13 @@ class SystemPrompt:
         return result
 
     def invalidate_session(self) -> None:
-        """Invalidate session-stable sections (groups 1+2). Called on /clear."""
-        session_groups = {SectionName.AGENTS_DOC, SectionName.SKILLS, SectionName.MEMORY, SectionName.REPO_MAP}
+        """Invalidate session-stable sections (groups 1+2). Called on /clear
+        and on `/mcp reconnect` (so the MCP_TOOLS section re-resolves)."""
+        session_groups = {
+            SectionName.MCP_TOOLS,
+            SectionName.AGENTS_DOC, SectionName.SKILLS, SectionName.MEMORY,
+            SectionName.REPO_MAP,
+        }
         for name, sec in self._sections.items():
             if name in session_groups:
                 sec.invalidate()

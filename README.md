@@ -1,6 +1,6 @@
 # agent-forge
 
-A minimal Python coding agent — interactive REPL and autonomous pipeline backed by Claude.
+A minimal Python coding agent — interactive REPL backed by Claude.
 
 ```
 cd /your/project
@@ -66,10 +66,12 @@ See the [Wiki skill](#wiki-skill) section below.
 |---|---|
 | Install and run your first session | [docs/user/getting-started.md](docs/user/getting-started.md) |
 | Configure auth, models, thinking modes, memory | [docs/user/configuration.md](docs/user/configuration.md) |
+| Roll out agent-forge to a team | [docs/user/team-setup.md](docs/user/team-setup.md) |
 | Look up slash commands or troubleshoot | [docs/user/faq.md](docs/user/faq.md) |
+| Connect MCP servers (filesystem, GitHub, Postgres, …) | [docs/user/mcp.md](docs/user/mcp.md) |
 | Understand the architecture or modify the codebase | [AGENTS.md](AGENTS.md) |
 
-The agent has six built-in tools — `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Find` — sandboxed to the working directory.
+The agent has six built-in tools — `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Find` — sandboxed to the working directory. Optional **Model Context Protocol** support lets you plug in any number of external tool servers (`pip install agent-forge[mcp]`; see [docs/user/mcp.md](docs/user/mcp.md)).
 
 ---
 
@@ -175,67 +177,8 @@ hand-readable and reviewable).
 
 ### Skill architecture reference
 
-For the full pipeline shape, schema contracts, and policies, see
-[.claude/skills/agent-forge-wiki/references/ARCHITECTURE.md](.claude/skills/agent-forge-wiki/references/ARCHITECTURE.md)
-(to be ported from the prior in-tree AGENTS.md in a follow-up commit).
+For the skill's invocation surface and capabilities, see
+[.claude/skills/agent-forge-wiki/SKILL.md](.claude/skills/agent-forge-wiki/SKILL.md).
+The stage modules under `scripts/wiki/` are documented inline.
 
-The decision to extract the wiki is recorded in
-[docs/adr/ADR-005-wiki-extracted-as-skill.md](docs/adr/ADR-005-wiki-extracted-as-skill.md).
 
----
-
-## Autonomous Mode
-
-For unattended, git-isolated execution — the agent works in a throwaway git worktree and never touches your main branch.
-
-### Prerequisites for autonomous mode
-
-- The repo must have a **clean working tree** (no uncommitted changes).
-- You must be on a **named branch** (not detached HEAD).
-- For PR delivery: the [GitHub CLI (`gh`)](https://cli.github.com/) must be installed and authenticated.
-
-### Python API
-
-```python
-import asyncio
-from agent_forge import run_autonomous, AutonomousConfig
-
-result = asyncio.run(run_autonomous(AutonomousConfig(
-    task="Add type annotations to all functions in src/utils.py",
-    api_key="sk-ant-...",           # or read from os.environ
-    repo_path="/your/project",      # must be a git repo
-    verify_commands=["pytest -x"],  # runs after the agent finishes; all must pass
-    delivery="pr",                  # "pr" | "merge" | "output" | "none"
-    max_turns=50,
-    thinking="medium",  # default; use "off" for cheapest runs
-)))
-
-print(result.success)   # True / False
-print(result.output)    # PR URL, merge message, or agent's final text
-print(result.error)     # set if success=False
-```
-
-### `AutonomousConfig` fields
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `task` | `str` | required | The task description sent to the agent |
-| `api_key` | `str` | required | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` value |
-| `model` | `Model` | `claude-sonnet-4-6` | Model to use |
-| `repo_path` | `str` | `"."` | Path to the git repository root |
-| `branch_prefix` | `str` | `"agent-forge"` | New branch will be `agent-forge/<timestamp>` |
-| `verify_commands` | `list[str]` | `[]` | Shell commands that must all exit 0 before delivery |
-| `delivery` | `str` | `"pr"` | `"pr"` (push + open PR) · `"merge"` (merge to current branch) · `"output"` (return text only) · `"none"` (leave worktree in place) |
-| `max_turns` | `int` | `100` | Hard cap on agent turns |
-| `thinking` | `str` | `"medium"` | Same levels as CLI |
-| `verbose` | `bool` | `False` | Print tool call events |
-
-### Flow states
-
-```
-GATING → ISOLATED → EXECUTING → VERIFYING → DELIVERING → DONE
-                                                ↓ (any state on error)
-                                             FAILED
-```
-
-The worktree is always cleaned up (via `try/finally`) on both success and failure.

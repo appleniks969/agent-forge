@@ -62,7 +62,7 @@ from .provider import (
     ContentBlockEndEvent, ContentBlockStartEvent, DoneEvent, LLMProvider,
     StreamErrorEvent, TextDeltaEvent, ThinkingDeltaEvent, ToolCallEndEvent,
 )
-from .tools import ToolRegistry
+from .tools import ToolRegistry, sanitize_exception
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ async def agent_loop(
                         call.arguments, cwd=config.cwd, signal=abort,
                     )
                 except Exception as exc:
-                    tool_result = ToolResult(content=str(exc), is_error=True)
+                    tool_result = ToolResult(content=sanitize_exception(exc), is_error=True)
 
             yield ToolResultAgentEvent(id=call.id, name=call.name, result=tool_result)
 
@@ -412,6 +412,7 @@ def make_config(
     hooks: Hooks | None = None,
     *,
     provider: LLMProvider | None = None,
+    tool_max_bytes: int = _MAX_TOOL_BYTES,
 ) -> AgentConfig:
     """
     Factory: build AgentConfig.
@@ -424,8 +425,9 @@ def make_config(
     is constructed lazily (the only place loop.py touches a concrete adapter —
     kept lazy so the SDK is not imported at module load).
 
-    project_root lets autonomous mode point to the repo even when cwd is a
-    worktree sibling that has no .agent-forge/ of its own.
+    project_root lets callers point to a repo root that differs from cwd
+    (useful when cwd is a sibling directory that has no .agent-forge/ of
+    its own).
     """
     if provider is None:
         if not api_key:
@@ -443,6 +445,7 @@ def make_config(
         max_tokens=max_tokens if max_tokens is not None else model.max_tokens,
         signal=signal,
         hooks=hooks if hooks is not None else NoopHooks(),
+        tool_max_bytes=tool_max_bytes,
     )
 
 

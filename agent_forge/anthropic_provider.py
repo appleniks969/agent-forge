@@ -140,7 +140,7 @@ class AnthropicProvider:
       input/output/cache counts; the loop syncs these into ``ContextWindow``.
 
     The provider is stateless across ``stream()`` calls \u2014 a single instance
-    can be shared by the REPL and autonomous flow within one process.
+    can be shared across REPL sessions within one process.
     """
 
     def __init__(
@@ -157,8 +157,8 @@ class AnthropicProvider:
         )
         self._cwd = cwd
         # Fix 10: explicit project_root takes priority; falls back to cwd.
-        # Autonomous mode passes cfg.repo_path so the worktree (a sibling of
-        # the repo) still detects .agent-forge/ correctly.
+        # Callers can pass project_root so a sibling directory (e.g. a
+        # worktree) still detects .agent-forge/ in the repo correctly.
         self._project_root = project_root or cwd
 
     async def stream(
@@ -179,8 +179,8 @@ class AnthropicProvider:
         betas: list[str] = []
 
         # Fix 10: 1-hour TTL when running inside a project that has .agent-forge/.
-        # Use project_root (set to repo_path by autonomous mode) so that worktrees,
-        # which are sibling directories without .agent-forge/, are still detected.
+        # Use project_root (when provided) so that sibling directories without
+        # their own .agent-forge/ are still detected as part of the project.
         _project = Path(self._project_root, ".agent-forge").exists()
         _cache_ctrl: dict = (
             {"type": "ephemeral", "ttl": "1h"} if _project else {"type": "ephemeral"}

@@ -2,8 +2,8 @@
 renderer.py — ANSI helpers, event renderer, markdown printer, footer.
 
 Depends on loop (AgentEvent types) and provider (TokenUsage). Presentation-only
-leaf of the composition layer — zero business logic, zero file I/O. Both chat.py
-and autonomous.py import render_event(); neither needs to know the ANSI details.
+leaf of the composition layer — zero business logic, zero file I/O. chat.py
+imports render_event(); it does not need to know the ANSI details.
 
 Owns: dim/bold/green/red/yellow/cyan helpers, render_event() (handles all 16
       AgentEvent branches), render_markdown(), print_footer(), get_console()
