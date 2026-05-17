@@ -506,3 +506,73 @@ def test_clear_resets_state():
     assert cw.estimate_tokens() == 0
     msgs = cw.build_messages(UserMessage(content="now"))
     assert len(msgs) == 1  # just the current user message
+
+
+# ── ContextWindow.init_from_existing: reconstruct tool_calls on resume ───────
+
+from agent_forge.messages import TokenUsage
+
+
+def test_init_from_existing_reconstructs_tool_calls():
+    """ContextWindow.init_from_existing rebuilds ToolCallRecord from blocks."""
+    asst = AssistantMessage(
+        content=(
+            TextContent(text="I'll read foo.py"),
+            ToolCallContent(id="tc-1", name="Read", arguments={"path": "foo.py"}),
+        ),
+        usage=TokenUsage(input=10, output=5, cache_read=0, cache_write=0),
+    )
+    tr = ToolResultMessage(
+        tool_call_id="tc-1",
+        content="file contents",
+        is_error=False,
+    )
+    msgs = [UserMessage(content="read foo.py"), asst, tr]
+
+    ctx = ContextWindow(model=DEFAULT_MODEL)
+    ctx.init_from_existing(msgs)
+
+    turns = ctx._recent_turns
+    assert len(turns) == 1
+    tcs = turns[0].tool_calls
+    assert len(tcs) == 1
+    assert tcs[0].id == "tc-1"
+    assert tcs[0].name == "Read"
+    assert tcs[0].args == {"path": "foo.py"}
+    assert tcs[0].result.content == "file contents"
+    assert tcs[0].result.is_error is False
+
+
+def test_init_from_existing_handles_error_tool_results():
+    """Errored tool results carry is_error=True through to ToolCallRecord."""
+    asst = AssistantMessage(
+        content=(ToolCallContent(id="tc-2", name="Bash", arguments={"command": "x"}),),
+        usage=TokenUsage(input=5, output=2, cache_read=0, cache_write=0),
+    )
+    tr = ToolResultMessage(tool_call_id="tc-2", content="command not found", is_error=True)
+    msgs = [UserMessage(content="run"), asst, tr]
+
+    ctx = ContextWindow(model=DEFAULT_MODEL)
+    ctx.init_from_existing(msgs)
+    tcs = ctx._recent_turns[0].tool_calls
+    assert tcs[0].result.is_error is True
+
+
+# ── ContextBudget knobs: p4_max_bytes / tool_max_bytes ───────────────────────
+
+def test_evict_p4_respects_custom_max_bytes():
+    long_content = "x" * 4096   # 4 KB
+    msg = ToolResultMessage(tool_call_id="t1", content=long_content, timestamp=0)
+    # Default 1 KB → evicted
+    out = evict_p4([msg])
+    assert "evicted" in out[0].content
+    # 8 KB cap → kept
+    out = evict_p4([msg], max_bytes=8 * 1024)
+    assert out[0].content == long_content
+
+
+def test_context_budget_carries_thresholds():
+    b = ContextBudget(keep_recent_tokens=10_000, recency_turns=5,
+                      p4_max_bytes=2048, tool_max_bytes=64 * 1024)
+    assert b.p4_max_bytes == 2048
+    assert b.tool_max_bytes == 64 * 1024
