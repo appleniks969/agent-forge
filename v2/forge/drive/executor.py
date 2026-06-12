@@ -3,12 +3,14 @@
 Layer: drive — the async shell; imports kernel + ports. execute() never
 raises (except task cancellation, which must propagate): unknown tools,
 invalid arguments, workspace escapes, and tool exceptions all become error
-ToolResults. Containment is executor-level: every top-level schema property
-with format == "path" is resolved through the injected Workspace BEFORE
-run(), so forgetting containment is impossible, including for third-party
-tools. Output truncation has exactly one knob: output_cap_bytes. Error
-sanitization (class-name prefix, $HOME redaction, no traceback) follows
-the legacy sanitize_exception contract.
+ToolResults. Tools resolve through a ToolSource AT CALL TIME — there is no
+frozen tool table, so an MCP reconnect that swaps server tools is visible
+to the very next effects_of()/execute(). Containment is executor-level:
+every top-level schema property with format == "path" is resolved through
+the injected Workspace BEFORE run(), so forgetting containment is
+impossible, including for third-party tools. Output truncation has exactly
+one knob: output_cap_bytes. Error sanitization (class-name prefix, $HOME
+redaction, no traceback) follows the legacy sanitize_exception contract.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from forge.kernel.types import Effects, ToolCall, ToolResult
+from forge.ports.source import StaticToolSource, ToolSource
 from forge.ports.tool import Tool, ToolCtx, Workspace, WorkspaceEscape
 
 TRUNCATION_MARKER = "\n[output truncated]"
@@ -90,21 +93,25 @@ def validate_args(schema: Mapping[str, Any], args: Mapping[str, Any]) -> list[st
 class ToolExecutor:
     def __init__(
         self,
-        tools: Iterable[Tool],
+        tools: Iterable[Tool] | ToolSource,
         ws: Workspace,
         *,
         output_cap_bytes: int = 48_000,
     ) -> None:
-        self._tools: dict[str, Tool] = {t.spec.name: t for t in tools}
+        # Back-compat: a plain iterable freezes into a StaticToolSource; a
+        # ToolSource is consulted per call, never snapshotted.
+        self._source: ToolSource = (
+            tools if isinstance(tools, ToolSource) else StaticToolSource(tools)
+        )
         self._ws = ws
         self._cap = output_cap_bytes
 
     def effects_of(self, name: str) -> Effects:
-        tool = self._tools.get(name)
+        tool = self._source.get(name)
         return tool.spec.effects if tool is not None else UNKNOWN_EFFECTS
 
     async def execute(self, call: ToolCall, cancel: asyncio.Event) -> ToolResult:
-        tool = self._tools.get(call.name)
+        tool = self._source.get(call.name)
         if tool is None:
             return ToolResult(call.id, f"unknown tool: {call.name}", is_error=True)
         if cancel.is_set():

@@ -15,6 +15,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from typing import TextIO
 
+from forge.adapters.mcp.manager import MCPManager
 from forge.drive.bus import Subscription
 from forge.drive.session import SessionHandle
 from forge.front import commands
@@ -55,6 +56,7 @@ async def run_repl(
     pricing: Pricing | None = None,
     input_fn: InputFn = input,
     out: TextIO | None = None,
+    mcp: MCPManager | None = None,
 ) -> int:
     out = out if out is not None else sys.stdout
     renderer = Renderer(out=out, pricing=pricing)
@@ -72,10 +74,12 @@ async def run_repl(
             if not line:
                 continue
             if line.startswith("/"):
-                ctx = commands.CommandContext(session=handle, model=model)
+                ctx = commands.CommandContext(session=handle, model=model, mcp=mcp)
                 outcome = commands.dispatch(line, ctx)
                 if outcome.text:
                     print(outcome.text, file=out)
+                if outcome.action is not None:
+                    print(await outcome.action(), file=out)
                 if outcome.quit:
                     break
                 if outcome.clear:

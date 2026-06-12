@@ -8,6 +8,13 @@ is the REPL, `forge run -p ...` is the oneshot/eval mode. provider="fake"
 wires forge.testing.FakeProvider with a canned script — forge.testing is a
 published surface by design, and it is what makes the CLI testable
 end-to-end without a network.
+
+MCP composition also lives here: configs come from mcp.toml plus repeatable
+--mcp-server flags (--no-mcp skips the files), and ONE ToolSource over
+builtins + the manager's live view feeds both the ToolExecutor and the
+policy's tools supplier — so a reconnect's tool swap reaches the executor
+and the prompt without re-wiring. The manager's aclose is chained after the
+session ends, so no child process outlives the CLI.
 """
 
 from __future__ import annotations
@@ -24,6 +31,12 @@ from pathlib import Path
 from typing import Literal
 
 from forge.adapters.jsonl_store import JsonlStore
+from forge.adapters.mcp.manager import (
+    MCPManager,
+    MCPServerConfig,
+    load_mcp_configs,
+    parse_mcp_server_spec,
+)
 from forge.adapters.tools import builtin_tools
 from forge.adapters.tools.workspace import RootedWorkspace
 from forge.drive.executor import ToolExecutor
@@ -35,6 +48,8 @@ from forge.policy import StandardPolicy
 from forge.policy.prompt import environment_section
 from forge.ports.asker import Asker
 from forge.ports.provider import Provider
+from forge.ports.source import StaticToolSource, ToolSource
+from forge.ports.tool import Tool
 from forge.testing import FakeProvider
 
 DEFAULT_MODEL = "claude-sonnet-4-5"
@@ -60,6 +75,23 @@ class Settings:
     ws_root: Path
     sessions_root: Path
     cache_ttl: str | None = None
+    mcp_configs: tuple[MCPServerConfig, ...] = ()
+
+
+def _resolve_mcp_configs(args: argparse.Namespace) -> tuple[MCPServerConfig, ...]:
+    """mcp.toml entries (project over global) unless --no-mcp; --mcp-server
+    specs apply either way and override file entries by name (last one wins)."""
+    by_name: dict[str, MCPServerConfig] = {}
+    if not args.no_mcp:
+        for cfg in load_mcp_configs(Path.cwd()):
+            by_name[cfg.name] = cfg
+    for spec in args.mcp_server or ():
+        try:
+            cfg = parse_mcp_server_spec(spec)
+        except ValueError as exc:
+            raise WiringError(str(exc)) from exc
+        by_name[cfg.name] = cfg
+    return tuple(by_name.values())
 
 
 def load_settings(args: argparse.Namespace) -> Settings:
@@ -77,6 +109,7 @@ def load_settings(args: argparse.Namespace) -> Settings:
         ws_root=Path.cwd(),
         sessions_root=Path(sessions_env) if sessions_env else DEFAULT_SESSIONS_ROOT,
         cache_ttl=os.environ.get("FORGE_CACHE_TTL"),
+        mcp_configs=_resolve_mcp_configs(args),
     )
 
 
@@ -105,6 +138,54 @@ def build_provider(settings: Settings) -> Provider:
     return AnthropicProvider(settings.api_key, cache_ttl=settings.cache_ttl)
 
 
+# --- MCP composition -----------------------------------------------------------
+
+
+class CompositeToolSource:
+    """First-match-wins union of sources. Children's generations are monotonic
+    counters, so their sum is a valid change token for the union."""
+
+    def __init__(self, sources: Sequence[ToolSource]) -> None:
+        self._sources = tuple(sources)
+
+    @property
+    def generation(self) -> int:
+        return sum(s.generation for s in self._sources)
+
+    def get(self, name: str) -> Tool | None:
+        for source in self._sources:
+            tool = source.get(name)
+            if tool is not None:
+                return tool
+        return None
+
+    def all(self) -> tuple[Tool, ...]:
+        by_name: dict[str, Tool] = {}
+        for source in self._sources:
+            for tool in source.all():
+                by_name.setdefault(tool.spec.name, tool)
+        return tuple(by_name.values())
+
+
+def build_tool_source(manager: MCPManager | None) -> ToolSource:
+    """ONE source feeds the executor and the prompt's tools supplier; the
+    manager's live view means a reconnect refreshes both automatically."""
+    base = StaticToolSource(builtin_tools())
+    if manager is None:
+        return base
+    return CompositeToolSource((base, manager.source()))
+
+
+async def connect_mcp(settings: Settings) -> MCPManager | None:
+    """Auto-enable: a manager exists iff any config resolved; connect failures
+    surface per-server via /mcp, never as a startup crash."""
+    if not settings.mcp_configs:
+        return None
+    manager = MCPManager(settings.mcp_configs)
+    await manager.connect_all()
+    return manager
+
+
 # --- session composition ------------------------------------------------------------
 
 
@@ -122,21 +203,22 @@ def build_session(
     asker: Asker,
     context_tokens: int,
     sid: str | None = None,
+    source: ToolSource | None = None,
 ) -> SessionHandle:
     ws = RootedWorkspace(settings.ws_root)
-    tools = builtin_tools()
-    specs = tuple(t.spec for t in tools)
+    src = source if source is not None else StaticToolSource(builtin_tools())
     policy = StandardPolicy(
         model=settings.model,
         context_tokens=context_tokens,
-        tools=specs,
+        # Supplier, not snapshot: every prompt build sees the current toolset.
+        tools=lambda: tuple(t.spec for t in src.all()),
         ws_root=ws.root,
         sections=(environment_section(lambda: _environment_facts(ws.root)),),
         max_turns=settings.max_turns,
     )
     sid = sid if sid is not None else uuid.uuid4().hex
     store = JsonlStore(settings.sessions_root, sid)
-    executor = ToolExecutor(tools, ws)
+    executor = ToolExecutor(src, ws)
     return SessionHandle.open(
         store, provider=provider, executor=executor, policy=policy, asker=asker, sid=sid
     )
@@ -160,6 +242,20 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_MAX_TURNS,
         help="model rounds allowed per user turn",
     )
+    parser.add_argument(
+        "--mcp-server",
+        dest="mcp_server",
+        action="append",
+        metavar="SPEC",
+        default=None,
+        help="add one MCP server: 'name=command [args...]'; repeatable",
+    )
+    parser.add_argument(
+        "--no-mcp",
+        dest="no_mcp",
+        action="store_true",
+        help="skip mcp.toml loading (--mcp-server flags still apply)",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -182,28 +278,40 @@ def _parser() -> argparse.ArgumentParser:
 async def _run_main(settings: Settings, *, prompt: str, json_out: bool) -> int:
     provider = build_provider(settings)
     info = await provider.info(settings.model)
-    handle = build_session(
-        settings,
-        provider=provider,
-        asker=oneshot.StaticAsker(allow=False),
-        context_tokens=info.context_tokens,
-    )
-    renderer = Renderer(
-        out=sys.stderr if json_out else sys.stdout, pricing=info.pricing
-    )
-    return await oneshot.run_once(
-        handle,
-        prompt,
-        renderer=renderer,
-        json_out=json_out,
-        out=sys.stdout,
-        pricing=info.pricing,
-    )
+    manager = await connect_mcp(settings)
+    try:
+        handle = build_session(
+            settings,
+            provider=provider,
+            asker=oneshot.StaticAsker(allow=False),
+            context_tokens=info.context_tokens,
+            source=build_tool_source(manager),
+        )
+        renderer = Renderer(
+            out=sys.stderr if json_out else sys.stdout, pricing=info.pricing
+        )
+        return await oneshot.run_once(
+            handle,
+            prompt,
+            renderer=renderer,
+            json_out=json_out,
+            out=sys.stdout,
+            pricing=info.pricing,
+        )
+    finally:
+        # Teardown chains AFTER the session closed (run_once closes the
+        # handle): no MCP child process outlives the run.
+        if manager is not None:
+            await manager.aclose()
 
 
 async def _repl_main(settings: Settings) -> int:
     info = await build_provider(settings).info(settings.model)
     asker = repl.ConsoleAsker()
+    # The manager (and the one source over builtins + its tools) outlives
+    # /clear: a fresh session reuses the same live toolset.
+    manager = await connect_mcp(settings)
+    source = build_tool_source(manager)
 
     async def make_session() -> SessionHandle:
         # A fresh provider per session: /clear gets a clean fake script too.
@@ -212,11 +320,16 @@ async def _repl_main(settings: Settings) -> int:
             provider=build_provider(settings),
             asker=asker,
             context_tokens=info.context_tokens,
+            source=source,
         )
 
-    return await repl.run_repl(
-        make_session, model=settings.model, pricing=info.pricing
-    )
+    try:
+        return await repl.run_repl(
+            make_session, model=settings.model, pricing=info.pricing, mcp=manager
+        )
+    finally:
+        if manager is not None:
+            await manager.aclose()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

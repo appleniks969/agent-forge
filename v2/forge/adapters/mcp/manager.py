@@ -9,8 +9,9 @@ tools default to WRITE_PATH|EXEC|EXTERNAL (EXTERNAL => the guard chain
 defaults to Ask) because we do not trust self-description with parallelism
 or auto-allow. Child processes get a scrubbed env (allowlist + declared
 vars), never the full host env. The mcp SDK import is lazy inside connect();
-tests inject fakes through the session_factory seam. TOML/CLI config parsing
-lives in front/wiring.py, not here.
+tests inject fakes through the session_factory seam. Config parsing
+(mcp.toml + --mcp-server specs) lives here next to MCPServerConfig;
+deciding WHICH configs apply stays in front/wiring.py.
 """
 
 from __future__ import annotations
@@ -20,12 +21,16 @@ import contextlib
 import json
 import logging
 import os
+import shlex
+import tomllib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol
 
 from forge.kernel.types import Effects, ToolResult, ToolSpec
+from forge.ports.source import ToolSource
 from forge.ports.tool import ToolCtx
 
 log = logging.getLogger(__name__)
@@ -260,12 +265,19 @@ class MCPManager:
             raise ValueError(f"duplicate MCP server name(s): {duplicates}")
         factory = session_factory or _stdio_session_factory
         self._servers = {c.name: _Server(c, factory, call_timeout) for c in configs}
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        """Monotonic change token: bumps whenever the toolset may have changed."""
+        return self._generation
 
     async def connect_all(self) -> None:
         """Connect every enabled server concurrently; failures stay per-server."""
         await asyncio.gather(
             *(s.connect() for s in self._servers.values()), return_exceptions=True
         )
+        self._generation += 1
 
     async def reconnect(self, name: str) -> bool:
         """Close + connect one server. True iff it ends up connected."""
@@ -274,6 +286,7 @@ class MCPManager:
             return False
         await server.aclose()
         await server.connect()
+        self._generation += 1
         return server.status is ServerStatus.CONNECTED
 
     async def aclose(self) -> None:
@@ -281,6 +294,7 @@ class MCPManager:
         await asyncio.gather(
             *(s.aclose() for s in self._servers.values()), return_exceptions=True
         )
+        self._generation += 1
 
     def status(self) -> dict[str, ServerStatus]:
         return {name: s.status for name, s in self._servers.items()}
@@ -290,6 +304,40 @@ class MCPManager:
 
     def tools(self) -> tuple[MCPTool, ...]:
         return tuple(t for s in self._servers.values() for t in s.tools)
+
+    def tool_counts(self) -> dict[str, int]:
+        return {name: len(s.tools) for name, s in self._servers.items()}
+
+    def source(self) -> ToolSource:
+        """A live ToolSource over this manager: lookups see the CURRENT toolset,
+        so a reconnect's tool swap reaches consumers without re-wiring."""
+        return _ManagerToolSource(self)
+
+
+class _ManagerToolSource:
+    """Name-indexed view; the index rebuilds whenever the generation moves."""
+
+    def __init__(self, manager: MCPManager) -> None:
+        self._manager = manager
+        self._indexed_at = -1
+        self._by_name: dict[str, MCPTool] = {}
+
+    @property
+    def generation(self) -> int:
+        return self._manager.generation
+
+    def get(self, name: str) -> MCPTool | None:
+        return self._index().get(name)
+
+    def all(self) -> tuple[MCPTool, ...]:
+        return tuple(self._index().values())
+
+    def _index(self) -> dict[str, MCPTool]:
+        generation = self._manager.generation
+        if generation != self._indexed_at:
+            self._by_name = {t.spec.name: t for t in self._manager.tools()}
+            self._indexed_at = generation
+        return self._by_name
 
 
 # --- default factory: real stdio transport, SDK imported lazily ------------------
@@ -310,23 +358,46 @@ async def _stdio_session_factory(config: MCPServerConfig) -> MCPSession:
         args=list(config.args),
         env=scrub_env(os.environ, config.env),
     )
-    # Enter both context managers by hand and pair the exits in aclose() —
-    # `async with` here would tear the session down on return.
-    transport_cm = stdio_client(params)
-    read, write = await transport_cm.__aenter__()
-    session_cm = ClientSession(read, write)
-    session = await session_cm.__aenter__()
-    await session.initialize()
-    return _StdioSession(session, session_cm, transport_cm)
+    # The SDK's context managers hide anyio cancel scopes that must be entered
+    # and exited by the SAME task, but connect_all()/aclose() run in different
+    # gather children. A dedicated lifecycle task owns both CMs end-to-end;
+    # connect hands the session out via a future, close just sets an event.
+    ready: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+    close = asyncio.Event()
+
+    async def lifecycle() -> None:
+        try:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    ready.set_result(session)
+                    await close.wait()
+        except BaseException as exc:  # noqa: BLE001 — surfaces via the future
+            if not ready.done():
+                ready.set_exception(exc)
+            elif not isinstance(exc, asyncio.CancelledError):
+                log.warning("MCP server %r stdio teardown: %s", config.name, exc)
+
+    task = asyncio.create_task(lifecycle(), name=f"mcp-stdio:{config.name}")
+    try:
+        session = await ready
+    except BaseException:
+        close.set()
+        with contextlib.suppress(BaseException):
+            await task
+        raise
+    return _StdioSession(session, close, task)
 
 
 class _StdioSession:
     """Adapts mcp.ClientSession to MCPSession; SDK types do not leak past here."""
 
-    def __init__(self, session: Any, session_cm: Any, transport_cm: Any) -> None:
+    _CLOSE_TIMEOUT = 5.0
+
+    def __init__(self, session: Any, close: asyncio.Event, task: asyncio.Task[None]) -> None:
         self._session = session
-        self._session_cm = session_cm
-        self._transport_cm = transport_cm
+        self._close = close
+        self._task = task
 
     async def list_tools(self) -> list[MCPToolDescriptor]:
         resp = await self._session.list_tools()
@@ -354,9 +425,110 @@ class _StdioSession:
         return "\n".join(parts)
 
     async def aclose(self) -> None:
-        # Reverse order of entry: session first, then transport.
-        for cm in (self._session_cm, self._transport_cm):
-            try:
-                await cm.__aexit__(None, None, None)
-            except Exception as exc:  # noqa: BLE001 — cleanup never raises
-                log.warning("MCP stdio close: %s", exc)
+        # Unblocks the lifecycle task, which exits both SDK context managers
+        # in the task that entered them; a hung child process gets cancelled.
+        self._close.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(self._task), self._CLOSE_TIMEOUT)
+        except TimeoutError:
+            self._task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._task
+        except Exception as exc:  # noqa: BLE001 — cleanup never raises
+            log.warning("MCP stdio close: %s", exc)
+
+
+# --- config loading: mcp.toml + --mcp-server specs (v1-compatible schema) ---------
+#
+#     [servers.fs]
+#     command = "mcp-server-filesystem"
+#     args    = ["/home/me/projects"]      # optional
+#     env     = { GITHUB_TOKEN = "..." }   # optional
+#     enabled = true                        # optional, defaults true
+#
+# Malformed files or entries are logged and skipped — startup never crashes
+# over one bad server declaration.
+
+_CONFIG_RELPATH = Path(".agent-forge") / "mcp.toml"
+
+
+def _parse_mcp_toml(path: Path) -> list[MCPServerConfig]:
+    """Parse one mcp.toml; missing or malformed files yield []."""
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return []
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        log.warning("MCP config %s: parse failed (%s) — skipped", path, exc)
+        return []
+
+    servers = data.get("servers")
+    if not isinstance(servers, dict):
+        return []
+
+    out: list[MCPServerConfig] = []
+    for name, raw in servers.items():
+        if not isinstance(raw, dict):
+            log.warning("MCP config %s: server %r is not a table — skipped", path, name)
+            continue
+        command = raw.get("command")
+        if not isinstance(command, str) or not command:
+            log.warning("MCP config %s: server %r missing command — skipped", path, name)
+            continue
+        args = raw.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            log.warning(
+                "MCP config %s: server %r args must be list[str] — skipped", path, name
+            )
+            continue
+        env = raw.get("env", {})
+        if not isinstance(env, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+        ):
+            log.warning(
+                "MCP config %s: server %r env must be dict[str,str] — skipped", path, name
+            )
+            continue
+        out.append(
+            MCPServerConfig(
+                name=name,
+                command=command,
+                args=tuple(args),
+                env=dict(env),
+                enabled=bool(raw.get("enabled", True)),
+            )
+        )
+    return out
+
+
+def load_mcp_configs(
+    cwd: str | os.PathLike[str], *, home: Path | None = None
+) -> list[MCPServerConfig]:
+    """Load configs from ~/.agent-forge/mcp.toml then <cwd>/.agent-forge/mcp.toml;
+    project entries override global by server name. Both files are optional."""
+    home = home if home is not None else Path.home()
+    by_name: dict[str, MCPServerConfig] = {}
+    for cfg in _parse_mcp_toml(home / _CONFIG_RELPATH):
+        by_name[cfg.name] = cfg
+    for cfg in _parse_mcp_toml(Path(cwd) / _CONFIG_RELPATH):
+        by_name[cfg.name] = cfg
+    return list(by_name.values())
+
+
+def parse_mcp_server_spec(spec: str) -> MCPServerConfig:
+    """Parse one --mcp-server value: 'name=command [args...]' (args shell-tokenised).
+
+    Raises ValueError on a malformed spec — the CLI surfaces the message.
+    """
+    if "=" not in spec:
+        raise ValueError(f"--mcp-server: expected 'name=command [args...]', got {spec!r}")
+    name, _, cmdline = spec.partition("=")
+    name = name.strip()
+    cmdline = cmdline.strip()
+    if not name or not cmdline:
+        raise ValueError(f"--mcp-server: empty name or command in {spec!r}")
+    tokens = shlex.split(cmdline)
+    if not tokens:
+        raise ValueError(f"--mcp-server: no command tokens in {spec!r}")
+    return MCPServerConfig(name=name, command=tokens[0], args=tuple(tokens[1:]))
