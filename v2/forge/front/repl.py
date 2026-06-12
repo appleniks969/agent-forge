@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import TextIO
 
 from forge.adapters.mcp.manager import MCPManager
+from forge.adapters.skills import SkillMeta
 from forge.drive.bus import Subscription
 from forge.drive.session import SessionHandle
 from forge.front import commands
@@ -57,6 +59,9 @@ async def run_repl(
     input_fn: InputFn = input,
     out: TextIO | None = None,
     mcp: MCPManager | None = None,
+    cwd: Path | None = None,
+    skills: Sequence[SkillMeta] | Callable[[], str] | None = None,
+    skill_resolver: Callable[[str], str | None] | None = None,
 ) -> int:
     out = out if out is not None else sys.stdout
     renderer = Renderer(out=out, pricing=pricing)
@@ -74,7 +79,14 @@ async def run_repl(
             if not line:
                 continue
             if line.startswith("/"):
-                ctx = commands.CommandContext(session=handle, model=model, mcp=mcp)
+                ctx = commands.CommandContext(
+                    session=handle,
+                    model=model,
+                    mcp=mcp,
+                    cwd=cwd,
+                    skills=skills,
+                    skill_resolver=skill_resolver,
+                )
                 outcome = commands.dispatch(line, ctx)
                 if outcome.text:
                     print(outcome.text, file=out)

@@ -37,15 +37,28 @@ from forge.adapters.mcp.manager import (
     load_mcp_configs,
     parse_mcp_server_spec,
 )
+from forge.adapters.skills import SkillTool, discover_skills, resolve_skill
 from forge.adapters.tools import builtin_tools
 from forge.adapters.tools.workspace import RootedWorkspace
 from forge.drive.executor import ToolExecutor
 from forge.drive.session import SessionHandle
 from forge.front import oneshot, repl
+from forge.front.orient import (
+    agents_doc_supplier,
+    memory_supplier,
+    repo_map_supplier,
+    skills_index_supplier,
+)
 from forge.front.render import Renderer
 from forge.kernel.types import ModelOutput, TextBlock, Usage
 from forge.policy import StandardPolicy
-from forge.policy.prompt import environment_section
+from forge.policy.prompt import (
+    agents_doc_section,
+    environment_section,
+    memory_section,
+    repo_map_section,
+    skills_section,
+)
 from forge.ports.asker import Asker
 from forge.ports.provider import Provider
 from forge.ports.source import StaticToolSource, ToolSource
@@ -113,6 +126,26 @@ def load_settings(args: argparse.Namespace) -> Settings:
     )
 
 
+# --- skill roots -------------------------------------------------------------------
+
+
+def skill_roots(cwd: Path) -> tuple[Path, ...]:
+    """Skill search roots in precedence order — PROJECT before GLOBAL.
+
+    discover_skills/resolve_skill de-dup by name with the EARLIEST root winning,
+    so listing project roots first lets a workspace skill override a global one.
+    Both the `.claude/skills` (wider-ecosystem layout) and `.agent-forge/skills`
+    (forge-native layout) directories are scanned at each scope. This is the only
+    place home/env is read for skills — the layer law keeps that read in front."""
+    home = Path.home()
+    return (
+        cwd / ".claude" / "skills",
+        cwd / ".agent-forge" / "skills",
+        home / ".claude" / "skills",
+        home / ".agent-forge" / "skills",
+    )
+
+
 # --- providers -------------------------------------------------------------------
 
 
@@ -167,10 +200,15 @@ class CompositeToolSource:
         return tuple(by_name.values())
 
 
-def build_tool_source(manager: MCPManager | None) -> ToolSource:
+def build_tool_source(
+    manager: MCPManager | None, roots: Sequence[Path] = ()
+) -> ToolSource:
     """ONE source feeds the executor and the prompt's tools supplier; the
-    manager's live view means a reconnect refreshes both automatically."""
-    base = StaticToolSource(builtin_tools())
+    manager's live view means a reconnect refreshes both automatically. The
+    SkillTool (READ_PATH: parallel-safe, no Ask) is a builtin alongside the
+    file tools, so it shows up in the prompt's tools section and is callable
+    from the parallel batch like any other read tool."""
+    base = StaticToolSource((*builtin_tools(), SkillTool(roots)))
     if manager is None:
         return base
     return CompositeToolSource((base, manager.source()))
@@ -206,14 +244,29 @@ def build_session(
     source: ToolSource | None = None,
 ) -> SessionHandle:
     ws = RootedWorkspace(settings.ws_root)
-    src = source if source is not None else StaticToolSource(builtin_tools())
+    roots = skill_roots(settings.ws_root)
+    src = (
+        source
+        if source is not None
+        else StaticToolSource((*builtin_tools(), SkillTool(roots)))
+    )
     policy = StandardPolicy(
         model=settings.model,
         context_tokens=context_tokens,
         # Supplier, not snapshot: every prompt build sees the current toolset.
         tools=lambda: tuple(t.spec for t in src.all()),
         ws_root=ws.root,
-        sections=(environment_section(lambda: _environment_facts(ws.root)),),
+        # Orientation order: who-you-are (identity, prepended by the policy),
+        # then environment, project instructions, the repo map, the skills
+        # catalog, and finally memory — broad context first, then the
+        # session-specific learnings, then tools (appended by the policy).
+        sections=(
+            environment_section(lambda: _environment_facts(ws.root)),
+            agents_doc_section(agents_doc_supplier(ws.root)),
+            repo_map_section(repo_map_supplier(ws.root)),
+            skills_section(skills_index_supplier(roots)),
+            memory_section(memory_supplier(ws.root)),
+        ),
         max_turns=settings.max_turns,
     )
     sid = sid if sid is not None else uuid.uuid4().hex
@@ -285,7 +338,7 @@ async def _run_main(settings: Settings, *, prompt: str, json_out: bool) -> int:
             provider=provider,
             asker=oneshot.StaticAsker(allow=False),
             context_tokens=info.context_tokens,
-            source=build_tool_source(manager),
+            source=build_tool_source(manager, skill_roots(settings.ws_root)),
         )
         renderer = Renderer(
             out=sys.stderr if json_out else sys.stdout, pricing=info.pricing
@@ -308,10 +361,11 @@ async def _run_main(settings: Settings, *, prompt: str, json_out: bool) -> int:
 async def _repl_main(settings: Settings) -> int:
     info = await build_provider(settings).info(settings.model)
     asker = repl.ConsoleAsker()
+    roots = skill_roots(settings.ws_root)
     # The manager (and the one source over builtins + its tools) outlives
     # /clear: a fresh session reuses the same live toolset.
     manager = await connect_mcp(settings)
-    source = build_tool_source(manager)
+    source = build_tool_source(manager, roots)
 
     async def make_session() -> SessionHandle:
         # A fresh provider per session: /clear gets a clean fake script too.
@@ -325,11 +379,31 @@ async def _repl_main(settings: Settings) -> int:
 
     try:
         return await repl.run_repl(
-            make_session, model=settings.model, pricing=info.pricing, mcp=manager
+            make_session,
+            model=settings.model,
+            pricing=info.pricing,
+            mcp=manager,
+            # /skills lists the catalog; /<name> runs a skill body; /remember
+            # writes <ws_root>/.agent-forge/memory.md. discover_skills/
+            # resolve_skill are stat-cached, so re-rendering each /skills is cheap.
+            cwd=settings.ws_root,
+            skills=lambda: render_skill_catalog(roots),
+            skill_resolver=lambda name: resolve_skill(roots, name),
         )
     finally:
         if manager is not None:
             await manager.aclose()
+
+
+def render_skill_catalog(roots: Sequence[Path]) -> str:
+    """The /skills payload: the live skills catalog as '<name> — <desc>' lines.
+
+    A zero-arg renderer (bound to roots) re-discovers on each call so a skill
+    added mid-session shows up; discover_skills is stat-cached so it stays cheap.
+    Empty -> the commands layer renders its own 'no skills found' line."""
+    from forge.adapters.skills import render_catalog
+
+    return render_catalog(discover_skills(roots))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

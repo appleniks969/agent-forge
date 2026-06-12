@@ -140,9 +140,13 @@ One line per public symbol, grouped by layer in dependency order.
 ### `forge.policy.prompt` — Prompt assembly policy: section thunks, content-hash memoization, stability tags.
 - `class PromptAssembler` — Re-resolves every thunk per build; memoizes sections on content hash. (methods: build, thunks)
 - `@dataclass SectionThunk(name: str, stability: Stability, resolve: Callable[[], str | None])` — A named, stability-tagged text producer. resolve() is re-called at every
+- `agents_doc_section(supplier: Callable[[], str | None]) -> SectionThunk` — Project instructions (AGENTS.md/CLAUDE.md). supplier is the I/O seam —
 - `content_digest(text: str) -> str`
 - `environment_section(facts: Callable[[], Mapping[str, str]]) -> SectionThunk` — facts is a supplier (injected by the composition root — policy never
 - `identity_section(text: str = DEFAULT_IDENTITY) -> SectionThunk`
+- `memory_section(supplier: Callable[[], str | None]) -> SectionThunk` — Merged global+project memory. supplier is the injected I/O seam.
+- `repo_map_section(supplier: Callable[[], str | None]) -> SectionThunk` — Git-recency-weighted repo tree. supplier is the injected I/O seam.
+- `skills_section(supplier: Callable[[], str | None]) -> SectionThunk` — Skill catalog index. supplier is the injected I/O seam.
 - `tools_section(specs: Callable[[], Sequence[ToolSpec]]) -> SectionThunk` — SESSION stability: the tool set is stable within a session but changes
 
 ## drive
@@ -201,6 +205,13 @@ One line per public symbol, grouped by layer in dependency order.
 - `parse_mcp_server_spec(spec: str) -> MCPServerConfig` — Parse one --mcp-server value: 'name=command [args...]' (args shell-tokenised).
 - `scrub_env(host: Mapping[str, str], declared: Mapping[str, str]) -> dict[str, str]` — Child env = allowlisted host vars + config-declared vars, nothing else.
 
+### `forge.adapters.skills` — Skill discovery + the Skill tool: load on-demand instruction bodies by name.
+- `@dataclass SkillMeta(name: str, description: str, path: Path)` — Frontmatter-only view of one skill — cheap to produce, no body read.
+- `class SkillTool` — Load a skill body (action 'get') or the catalog (action 'list'). (methods: run)
+- `discover_skills(roots: Sequence[Path]) -> tuple[SkillMeta, ...]` — Frontmatter-only catalog across roots. De-duped by name (earlier root
+- `render_catalog(metas: Sequence[SkillMeta]) -> str` — '<name> — <desc>' lines under a heading; the SkillTool 'list' action and
+- `resolve_skill(roots: Sequence[Path], name: str) -> str | None` — Full body text (frontmatter stripped) of the named skill, or None if
+
 ### `forge.adapters.tools` — adapters.tools: the six built-in tools plus the Workspace implementation.
 - `builtin_tools() -> tuple[Tool, ...]`
 
@@ -244,13 +255,23 @@ One line per public symbol, grouped by layer in dependency order.
 
 ### `forge.front.commands` — Declarative slash command table shared by every shell.
 - `@dataclass Command(name: str, help: str, handler: Handler)`
-- `@dataclass CommandContext(session: SessionHandle, model: str, mcp: MCPManager | None = None)`
+- `@dataclass CommandContext(session: SessionHandle, model: str, mcp: MCPManager | None = None, cwd: Path | None = None, skills: 'Sequence[SkillMeta] | Callable[[], str] | None' = None, skill_resolver: Callable[[str], str | None] | None = None)`
 - `@dataclass CommandOutcome(text: str = '', quit: bool = False, clear: bool = False, action: Callable[[], Awaitable[str]] | None = None)`
-- `dispatch(line: str, ctx: CommandContext) -> CommandOutcome` — Resolve one '/name args' line against the table; unknown names get help.
+- `dispatch(line: str, ctx: CommandContext) -> CommandOutcome` — Resolve one '/name args' line: known command, else known skill, else help.
+
+### `forge.front.memory` — front/memory: the /remember write path — append a learning to project memory.
+- `memory_path(cwd: Path) -> Path` — Project memory file: <cwd>/.agent-forge/memory.md (parents created).
+- `remember(cwd: Path, text: str) -> str` — Append a learning to project memory; return a one-line confirmation.
 
 ### `forge.front.oneshot` — Oneshot: drive one turn, render it, optionally emit the run record.
 - `class StaticAsker` — Non-interactive permission policy: one fixed answer for every Ask. (methods: ask)
 - `async run_once(handle: SessionHandle, prompt: str, *, renderer: Renderer, json_out: bool = False, out: TextIO | None = None, pricing: Pricing | None = None) -> int` — One turn against an already-composed SessionHandle; returns exit code.
+
+### `forge.front.orient` — Orientation readers: file-reading suppliers for the prompt's session sections.
+- `agents_doc_supplier(cwd: Path) -> Callable[[], str | None]` — Supply the project-instructions section.
+- `memory_supplier(cwd: Path) -> Callable[[], str | None]` — Supply the merged global + project memory section.
+- `repo_map_supplier(cwd: Path) -> Callable[[], str | None]` — Supply a git-recency-weighted repository map for large repos.
+- `skills_index_supplier(roots: Sequence[Path]) -> Callable[[], str | None]` — Supply the skills catalogue: one '<name> — <description>' line per skill.
 
 ### `forge.front.render` — Renderer: a bus subscriber that draws envelopes as plain ANSI text.
 - `class Renderer` (methods: handle)
@@ -258,7 +279,7 @@ One line per public symbol, grouped by layer in dependency order.
 
 ### `forge.front.repl` — REPL: a stdlib line shell — a renderer plus Asker over SessionHandle.
 - `class ConsoleAsker` — The REPL's Asker: y/n prompt on permission Ask, read off-loop. (methods: ask)
-- `async run_repl(make_session: SessionFactory, *, model: str, pricing: Pricing | None = None, input_fn: InputFn = input, out: TextIO | None = None, mcp: MCPManager | None = None) -> int`
+- `async run_repl(make_session: SessionFactory, *, model: str, pricing: Pricing | None = None, input_fn: InputFn = input, out: TextIO | None = None, mcp: MCPManager | None = None, cwd: Path | None = None, skills: Sequence[SkillMeta] | Callable[[], str] | None = None, skill_resolver: Callable[[str], str | None] | None = None) -> int`
 
 ### `forge.front.wiring` — Composition root and CLI entry point: one frozen Settings, all env reads.
 - `class CompositeToolSource` — First-match-wins union of sources. Children's generations are monotonic (methods: all, generation, get)
@@ -266,8 +287,10 @@ One line per public symbol, grouped by layer in dependency order.
 - `class WiringError(Exception)` — Composition failure the CLI reports as exit code 2 (e.g. no credentials).
 - `build_provider(settings: Settings) -> Provider`
 - `build_session(settings: Settings, *, provider: Provider, asker: Asker, context_tokens: int, sid: str | None = None, source: ToolSource | None = None) -> SessionHandle`
-- `build_tool_source(manager: MCPManager | None) -> ToolSource` — ONE source feeds the executor and the prompt's tools supplier; the
+- `build_tool_source(manager: MCPManager | None, roots: Sequence[Path] = ()) -> ToolSource` — ONE source feeds the executor and the prompt's tools supplier; the
 - `async connect_mcp(settings: Settings) -> MCPManager | None` — Auto-enable: a manager exists iff any config resolved; connect failures
 - `fake_script() -> list[ModelOutput]`
 - `load_settings(args: argparse.Namespace) -> Settings`
 - `main(argv: Sequence[str] | None = None) -> int`
+- `render_skill_catalog(roots: Sequence[Path]) -> str` — The /skills payload: the live skills catalog as '<name> — <desc>' lines.
+- `skill_roots(cwd: Path) -> tuple[Path, ...]` — Skill search roots in precedence order — PROJECT before GLOBAL.

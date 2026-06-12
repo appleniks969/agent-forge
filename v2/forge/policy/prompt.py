@@ -129,6 +129,31 @@ def tools_section(specs: Callable[[], Sequence[ToolSpec]]) -> SectionThunk:
     return SectionThunk("tools", Stability.SESSION, resolve)
 
 
+def agents_doc_section(supplier: Callable[[], str | None]) -> SectionThunk:
+    """Project instructions (AGENTS.md/CLAUDE.md). supplier is the I/O seam —
+    injected by the composition root so policy never touches the filesystem."""
+
+    return SectionThunk("agents_doc", Stability.SESSION, supplier)
+
+
+def repo_map_section(supplier: Callable[[], str | None]) -> SectionThunk:
+    """Git-recency-weighted repo tree. supplier is the injected I/O seam."""
+
+    return SectionThunk("repo_map", Stability.SESSION, supplier)
+
+
+def memory_section(supplier: Callable[[], str | None]) -> SectionThunk:
+    """Merged global+project memory. supplier is the injected I/O seam."""
+
+    return SectionThunk("memory", Stability.SESSION, supplier)
+
+
+def skills_section(supplier: Callable[[], str | None]) -> SectionThunk:
+    """Skill catalog index. supplier is the injected I/O seam."""
+
+    return SectionThunk("skills", Stability.SESSION, supplier)
+
+
 def _tool_line(spec: ToolSpec) -> str:
     desc = " ".join(spec.description.split())
     label = _effects_label(spec.effects)
