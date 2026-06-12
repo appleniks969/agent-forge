@@ -1,0 +1,107 @@
+{
+  "label": "agent-forge v1 (main @ 171cd77) \u2014 head-to-head vs forge v2",
+  "capturedAt": "2026-06-11",
+  "model": "claude-sonnet-4-6",
+  "source": "automated \u2014 sequential runs, isolated parent dirs + cleared state per tool; v1 via --prompt --verbose footer, v2 via forge run --json (v2 cost computed from usage at $3/$15/$0.30/$3.75 per M, same rates v1 prices with)",
+  "tool": "agent-forge",
+  "simpleTasks": {
+    "total": {
+      "cost": 0.1739,
+      "tasks": 3,
+      "avgTurns": 4.3
+    },
+    "S1_palindrome": {
+      "turns": 3,
+      "cost": 0.023,
+      "inputTokens": 26,
+      "outputTokens": 679,
+      "cacheRead": 5087,
+      "cacheWrite": 2978,
+      "cacheHitRate": 99.5
+    },
+    "S2_queue": {
+      "turns": 3,
+      "cost": 0.0186,
+      "inputTokens": 26,
+      "outputTokens": 707,
+      "cacheRead": 6311,
+      "cacheWrite": 1597,
+      "cacheHitRate": 99.6
+    },
+    "S3_debounce": {
+      "turns": 7,
+      "cost": 0.1323,
+      "inputTokens": 58,
+      "outputTokens": 6198,
+      "cacheRead": 32659,
+      "cacheWrite": 7834,
+      "cacheHitRate": 99.8
+    }
+  },
+  "complexTasks": {
+    "total": {
+      "cost": 0.3782,
+      "tasks": 3,
+      "avgTurns": 10.0
+    },
+    "C1_lruCache": {
+      "turns": 9,
+      "cost": 0.1277,
+      "inputTokens": 74,
+      "outputTokens": 5328,
+      "cacheRead": 54085,
+      "cacheWrite": 8367,
+      "cacheHitRate": 99.9,
+      "compilesClean": false,
+      "testsPassed": true,
+      "testCount": 33,
+      "testPassCount": 33,
+      "qualityScore": 7.0,
+      "qualityNotes": "O(1) verified (sentinel DLL + Map); best-in-class restraint; 33 deterministic behavioral assertions. Fatal: delivered tsconfig fails tsc --noEmit on installed TS 6 (TS5107 node10) \u2014 config-only, source compiles clean with explicit flags."
+    },
+    "C2_rateLimiter": {
+      "turns": 11,
+      "cost": 0.1225,
+      "inputTokens": 90,
+      "outputTokens": 5084,
+      "cacheRead": 60576,
+      "cacheWrite": 7400,
+      "cacheHitRate": 99.9,
+      "compilesClean": false,
+      "testsPassed": true,
+      "testCount": 11,
+      "testPassCount": 11,
+      "qualityScore": 5.5,
+      "qualityNotes": "Drift-free refill math; honest JSDoc. Holes: NaN/Infinity pass validation; consume(tokens>capacity) silently false forever, undocumented; no injectable clock (real 200ms sleep); zero throw-path tests; tsconfig fails tsc --noEmit (TS5107)."
+    },
+    "C3_eventEmitter": {
+      "turns": 10,
+      "cost": 0.128,
+      "inputTokens": 82,
+      "outputTokens": 5441,
+      "cacheRead": 57107,
+      "cacheWrite": 7732,
+      "cacheHitRate": 99.9,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCount": 12,
+      "testPassCount": 12,
+      "qualityScore": 9.0,
+      "qualityNotes": "Node-equivalent semantics on every adversarial probe: off() cancels once(), snapshot iteration, re-entrancy safe, all tested incl. re-entrant ordering. Ding: Record<string,unknown> constraint rejects interface event maps; mild scope creep (listenerCount, removeAllListeners)."
+    }
+  },
+  "overallQuality": {
+    "score": 7.5,
+    "basis": "4 graded units (3 complex head-to-head + simple tier), restraint-weighted adversarial rubric",
+    "strengths": [
+      "restraint: answers exactly what was asked",
+      "EventEmitter matches Node semantics on every adversarial probe",
+      "cheapest per task at equal cache efficiency"
+    ],
+    "weaknesses": [
+      "ships unverified build artifacts (2/3 delivered tsconfigs fail installed tsc)",
+      "weak input validation (NaN/Infinity)",
+      "no failure-path tests in C2"
+    ]
+  }
+}
