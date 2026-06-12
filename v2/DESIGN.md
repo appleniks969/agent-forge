@@ -5,7 +5,7 @@
 
 ## 1. Organizing principle
 
-The agent is a pure transition function — `step(state, input, policy) -> (state, effects, events)` — executed by a deliberately dumb async driver, and **the append-only event log is the only source of truth**. Every fact that changes a session (user input, completed model output, tool result, permission decision, compaction summary) is an event emitted by exactly one producer (the kernel), fsync'd before anything else sees it; transcript, context window, renderer, resume, telemetry, eval, and the wiki are all folds or subscribers over that log. Streaming deltas are the one deliberate exception: they go straight to a render callback and never enter kernel state, so the provider seam shrinks to "give me one completed output," the Anthropic block-lifecycle dialect dies, and retry-after-partial-stream cannot half-mutate anything. The scoping razor for the whole system: **if a feature can be a separate program reading the log, it is not in the core.**
+The agent is a pure transition function — `step(state, input, policy) -> (state, effects, events)` — executed by a deliberately dumb async driver, and **the append-only event log is the only source of truth**. Every fact that changes a session (user input, completed model output, tool result, permission decision, compaction summary) is an event emitted by exactly one producer (the kernel; sole sanctioned exception: `RetryScheduled`, §9.6), fsync'd before anything else sees it; transcript, context window, renderer, resume, telemetry, eval, and the wiki are all folds or subscribers over that log. Streaming deltas are the one deliberate exception: they go straight to a render callback and never enter kernel state, so the provider seam shrinks to "give me one completed output," the Anthropic block-lifecycle dialect dies, and retry-after-partial-stream cannot half-mutate anything. The scoping razor for the whole system: **if a feature can be a separate program reading the log, it is not in the core.**
 
 ### Calls made on contested points
 
@@ -79,10 +79,11 @@ class RunTools:   calls: tuple[ToolCall, ...]      # one batch; driver schedules
 @dataclass(frozen=True)
 class AskUser:    question: PermissionQuestion     # guard chain returned Ask
 @dataclass(frozen=True)
-class Finish:     result: TurnResult               # one terminal shape: ok|aborted|max_turns|fatal
+class Finish:     result: TurnResult               # one terminal shape: ok|aborted|max_turns ("fatal" reserved — §9.1)
 Effect = CallModel | RunTools | AskUser | Finish
 
-Input = UserInput | ModelOutput | ToolOutcome | PermissionAnswer | Cancelled
+Input = UserInput | ModelResponded | ToolOutcome | PermissionAnswer | Cancelled
+# ModelResponded wraps the completed ModelOutput with its originating ModelRequest (§9.5)
 
 @dataclass(frozen=True)
 class Step:
@@ -163,7 +164,7 @@ class Envelope:
     body: Event
 ```
 
-Durable events: `UserSubmitted | TurnStarted | AssistantBlock | ToolDeclared | ToolStarted | ToolFinished | PermissionAsked | PermissionDecided(source=user|policy, reason) | Compacted(summary, first_kept_seq) | RetryScheduled | TurnFinished(outcome, usage, cost) | ChildSpawned | SessionEnded`. Transient: `TextDelta | ThinkingDelta | ToolOutputChunk` — live render only, superseded by the durable block-final event. Permission decisions are logged (Ledger graft, all three judges): audit and replay of every human/policy verdict come free for two event types. Store: fsync'd JSONL under `~/.agent-forge/sessions/`, redact-and-rewrite **before** append, snapshots every N turns keyed `(fold_version, seq)` and dropped if stale, sidecar index updated on append (O(1) session listing). `forge replay <sid> --until <seq>` reconstructs any state for free once `fold` exists.
+Durable events: `UserSubmitted | TurnStarted | AssistantBlock | ToolDeclared | ToolStarted | ToolFinished | PermissionAsked | PermissionDecided(source=user|policy, reason) | Compacted(summary, first_kept_seq — always 0, §9.2) | RetryScheduled | TurnFinished(outcome, usage, cost — always None from the kernel, §9.3) | ChildSpawned | SessionEnded`. Transient: `TextDelta | ThinkingDelta | ToolOutputChunk` — live render only, superseded by the durable block-final event. Permission decisions are logged (Ledger graft, all three judges): audit and replay of every human/policy verdict come free for two event types. Store: fsync'd JSONL under `~/.agent-forge/sessions/`, redact-and-rewrite **before** append, snapshots every N turns keyed `(fold_version, seq)` and dropped if stale, sidecar index updated on append (O(1) session listing). `forge replay <sid> --until <seq>` reconstructs any state for free once `fold` exists.
 
 ### 3.5 Guard chain + Asker
 
@@ -171,7 +172,7 @@ Durable events: `UserSubmitted | TurnStarted | AssistantBlock | ToolDeclared | T
 
 ### 3.6 SessionHandle
 
-`open / resume / submit(text) / subscribe() -> AsyncIterator[Envelope] / answer_permission(id, allow) / close()`. All turn choreography — persist-before-run ordering, resume seeding, cost accounting, model swaps — lives here, below the UI line (Thin-Waist graft, Judge 1's anti-god-module fix). The REPL holds zero conversation state; a TUI or websocket front-end is a new subscriber, not a rewrite.
+`open / resume / submit(text) / subscribe() -> AsyncIterator[Envelope] / answer_permission(id, allow) / close()`. All turn choreography — persist-before-run ordering, resume seeding, retry wrapping, model swaps — lives here, below the UI line (cost derivation lives in `front`, §9.3) (Thin-Waist graft, Judge 1's anti-god-module fix). The REPL holds zero conversation state; a TUI or websocket front-end is a new subscriber, not a rewrite.
 
 ### 3.7 Context + prompt policies (pure)
 
@@ -189,7 +190,7 @@ Durable events: `UserSubmitted | TurnStarted | AssistantBlock | ToolDeclared | T
 6. Driver executes the batch in one `TaskGroup`: calls whose combined `Effects` are read-only run concurrently; anything `WRITE_PATH|EXEC|EXTERNAL` serializes. The executor validates args, resolves path fields through `Workspace`, caps output (one knob), sanitizes errors. Outcomes re-enter as `ToolOutcome` inputs **in call-index order** — deterministic replay under concurrency.
 7. Cancel: one `asyncio.Event`; the driver injects `Cancelled`, the kernel does placeholder-result bookkeeping purely, adapters translate `CancelledError` into well-formed terminal events. Subprocess kill is by process group.
 8. Loop to step 2 (`CallModel` again) until `Finish`. If pressure crossed the compaction tier, the kernel emitted `CallModel(purpose="compaction")` and a `Compacted` event through the same pipe — one producer, no fabrication.
-9. `TurnFinished(outcome, usage, cost)` — exactly one terminal shape. Renderer prints the footer from it; the persister already logged it; `oneshot.py` emits it as `run.json` / `--json`, which is the eval contract.
+9. `TurnFinished(outcome, usage, cost=None)` — exactly one terminal shape; cost is derived in `front` from `ModelInfo.pricing` (§9.3). Renderer prints the footer from it; the persister already logged it; `oneshot.py` emits it as `run.json` / `--json`, which is the eval contract.
 
 State ownership: the log owns truth; `SessionState` in the driver is `fold(log)` (resume and live are the same function — no duplicate message list anywhere); the context window is derived per-call by pure policy; config is one frozen `Settings` from `wiring.py` with zero `os.environ` reads below `front/`.
 
@@ -201,7 +202,7 @@ State ownership: the log owns truth; `SessionState` in the driver is `fold(log)`
 |---|---|---|---|
 | Orchestration core | Pure `step(state, input, policy)`; dumb driver executes a closed Effect union | Table-testable without mocks/asyncio; god-function pressure has nowhere legal to land | `agent_loop`'s ~150-line generator + three lockstep accumulators; runtime/chat choreography split |
 | Streaming | Deltas are render-only; kernel consumes one completed `ModelOutput` | Deletes the Anthropic block dialect and the partial-retry dedup hole in one move | 7-event `StreamEvent` dialect, `_stream_one_turn`, re-streamed UI content |
-| Event production | Kernel is the sole producer; compaction is a kernel transition logging its summary | Phantom-event class structurally unrepresentable; summaries survive resume | `runtime.py:186` fabricated `CompactionAgentEvent`; dead 3-module compaction pipeline |
+| Event production | Kernel is the sole producer (one sanctioned exception: `RetryScheduled` — §9.6); compaction is a kernel transition logging its summary | Phantom-event class structurally unrepresentable; summaries survive resume | `runtime.py:186` fabricated `CompactionAgentEvent`; dead 3-module compaction pipeline |
 | Persistence | fsync-per-durable-event JSONL; state = `fold(log)`; snapshots `(fold_version, seq)` | Per-event crash safety; resume == live; self-invalidating snapshots | Turn-batched appends, chat.py's duplicate list, hand-rolled third message schema |
 | Provider seam | `complete()` + `info()`; stability tags; effort enum; retry as a port decorator | n=1 honesty with a contract kit defining adapter #2; one retry surface | 7-event Protocol, double retry, static `MODELS` table, substring capability sniffing |
 | Provider policy | All cache/OAuth/header/TTL policy inside the adapter or `Settings` | Transport adapters must not probe repo layout | `.agent-forge/` filesystem probe in the constructor; env reads deep in `_do_stream` |
@@ -254,3 +255,20 @@ State ownership: the log owns truth; `SessionState` in the driver is `fold(log)`
 6. **Externalize wiki and eval; automate the docs.** Repoint the wiki skill at the now-public event schema and `forge.testing` (fixing its broken imports as a side effect); merge the two eval methodologies onto `--json`; replace AGENTS.md's hand-mirrored sections with the generated concept index + link lint. Delete every back-compat re-export alias in the same PR — one import path per name, enforced from then on.
 
 Steps 1–2 are a week each against the existing test suite; step 3 is the risky one and is exactly where the property tests pay for themselves; steps 4–6 are independent once 3 lands.
+
+---
+
+## 9. As-built ratifications (2026-06-12)
+
+The implementation deviated from §§1–8 in the following deliberate ways; each entry is verified against the code as of this date. Earlier sections now point here — this table is the tiebreaker.
+
+| # | As built | Where | Rationale |
+|---|---|---|---|
+| 9.1 | The kernel never emits a `fatal` outcome. A provider error that escapes retry interrupts the effect loop; the driver injects `Cancelled`, the turn closes as `aborted` with placeholder tool results, and the exception rides `TurnReport.error` — re-raised by `SessionHandle.submit()` only after the state commit. `"fatal"` stays reserved in the `Outcome` literal; only `front/oneshot.py` synthesizes it, for the run record when a turn dies before any `TurnFinished`. | `drive/driver.py`, `drive/session.py`, `kernel/step.py`, `front/oneshot.py` | Every failure path leaves a well-formed, replayable log; callers still see the exception. |
+| 9.2 | `Compacted.first_kept_seq` is always `0`: compaction fully replaces the window (`apply_compaction` drops every message; `state.summary` holds the survivor), and context policy weaves the summary into the next request under a `[Conversation summary]` header. | `kernel/step.py`, `kernel/state.py`, `policy/context.py` | The pure kernel cannot know store seqs; the field is kept for a future partial-retention scheme. |
+| 9.3 | `TurnFinished.cost` is always `None` from the kernel. Cost is derived in `front` from `ModelInfo.pricing` (`Pricing.cost(usage)`) — renderer footer and the `--json` run record; unpriced model ⇒ cost stays null. | `kernel/step.py::_finish_turn`, `front/render.py`, `front/oneshot.py` | Pricing is provider knowledge; a kernel price table would be silently wrong. |
+| 9.4 | `ToolStarted` is emitted by `step()` when it dispatches `RunTools` (and on a user Allow), not by the driver at actual task start. | `kernel/step.py::_on_model`, `::_on_answer` | Single-producer rule outweighs timing fidelity; the gap is scheduler latency only. |
+| 9.5 | `ModelOutput` re-enters `step()` wrapped as `ModelResponded(output, request)`: the originating `ModelRequest` rides along, so the kernel reads `purpose` and the declared `ToolSpec.effects` without holding tool registries in state. | `kernel/step.py`, `drive/driver.py` | Keeps `SessionState` registry-free and the transition pure. |
+| 9.6 | `RetryScheduled` is built in `drive/retry.py` (reported via `on_retry` before each backoff sleep) — the one sanctioned durable event produced outside the kernel; verified to be the only one. | `drive/retry.py`, `drive/session.py` | The kernel never sees transient faults by design, so it cannot log the wait. |
+| 9.7 | The active toolset is NOT recorded in the event log: no `ToolsetChanged` event exists, even though `MCPManager.reconnect(name)` has landed — replay cannot show which tools were available at a given seq. | `kernel/events.py`, `adapters/mcp/manager.py` | Known omission, still deferred: add `ToolsetChanged` when mid-session toolset mutation becomes behavior worth folding. |
+| 9.8 | Anthropic model table: known-but-unpriced families (`claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`) carry `pricing=None`, and unknown ids fall through to `pricing=None` (200k context, thinking off) — tokens reported, cost omitted, never guessed. | `adapters/anthropic.py` | Honors §3.2: `pricing=None ⇒ omit cost — never silently wrong`, including for models newer than the table. |
