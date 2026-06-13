@@ -273,7 +273,7 @@ One line per public symbol, grouped by layer in dependency order.
 - `repo_map_supplier(cwd: Path) -> Callable[[], str | None]` — Supply a git-recency-weighted repository map for large repos.
 - `skills_index_supplier(roots: Sequence[Path]) -> Callable[[], str | None]` — Supply the skills catalogue: one '<name> — <description>' line per skill.
 
-### `forge.front.render` — Renderer: a bus subscriber that draws envelopes as plain ANSI text.
+### `forge.front.render` — Renderer: a bus subscriber that draws envelopes with Rich.
 - `class Renderer` (methods: handle)
 - `args_brief(args: Mapping[str, Any]) -> str`
 
