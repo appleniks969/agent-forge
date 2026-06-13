@@ -7,7 +7,7 @@ name = "forge-v2"
 version = "0.1.0"
 description = "forge v2 - a sans-IO coding agent: pure kernel over one event log"
 requires-python = ">=3.12"
-dependencies = ["anthropic>=0.40", "rich>=13"]
+dependencies = ["anthropic>=0.40", "rich>=13", "prompt_toolkit>=3"]
 
 [project.optional-dependencies]
 mcp = ["mcp"]

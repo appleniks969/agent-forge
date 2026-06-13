@@ -274,12 +274,12 @@ One line per public symbol, grouped by layer in dependency order.
 - `skills_index_supplier(roots: Sequence[Path]) -> Callable[[], str | None]` — Supply the skills catalogue: one '<name> — <description>' line per skill.
 
 ### `forge.front.render` — Renderer: a bus subscriber that draws envelopes with Rich.
-- `class Renderer` (methods: handle)
+- `class Renderer` (methods: handle, print_banner)
 - `args_brief(args: Mapping[str, Any]) -> str`
 
 ### `forge.front.repl` — REPL: a stdlib line shell — a renderer plus Asker over SessionHandle.
 - `class ConsoleAsker` — The REPL's Asker: y/n prompt on permission Ask, read off-loop. (methods: ask)
-- `async run_repl(make_session: SessionFactory, *, model: str, pricing: Pricing | None = None, input_fn: InputFn = input, out: TextIO | None = None, mcp: MCPManager | None = None, cwd: Path | None = None, skills: Sequence[SkillMeta] | Callable[[], str] | None = None, skill_resolver: Callable[[str], str | None] | None = None) -> int`
+- `async run_repl(make_session: SessionFactory, *, model: str, pricing: Pricing | None = None, input_fn: InputFn | None = None, out: TextIO | None = None, mcp: MCPManager | None = None, cwd: Path | None = None, skills: Sequence[SkillMeta] | Callable[[], str] | None = None, skill_resolver: Callable[[str], str | None] | None = None) -> int`
 
 ### `forge.front.wiring` — Composition root and CLI entry point: one frozen Settings, all env reads.
 - `class CompositeToolSource` — First-match-wins union of sources. Children's generations are monotonic (methods: all, generation, get)

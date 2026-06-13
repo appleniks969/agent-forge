@@ -173,16 +173,40 @@ class Renderer:
             self._flush()
             self._console.print(f"  ! {_first_line(result.content)}", style="dim red")
 
+    def print_banner(self, model: str, *, commands: str = "") -> None:
+        """A solid header panel shown once at REPL start."""
+        body = Text()
+        body.append("model  ", style="dim")
+        body.append(model, style="bold cyan")
+        if commands:
+            body.append("\n")
+            body.append(commands, style="dim")
+        self._console.print(
+            Panel(body, title="forge", title_align="left", border_style="cyan", padding=(0, 1))
+        )
+
     def _footer(self, ev: TurnFinished) -> None:
         usage = ev.usage
         cost = ev.cost
         if cost is None and self._pricing is not None:
             cost = self._pricing.cost(usage)
-        parts = [ev.outcome, f"{usage.input_tokens} in / {usage.output_tokens} out"]
+        ok = ev.outcome == "ok"
+        badges: list[tuple[str, str]] = [
+            (f" {ev.outcome} ", "black on green" if ok else "white on red"),
+            (f" ↑{usage.input_tokens:,} ↓{usage.output_tokens:,} ", "black on bright_blue"),
+        ]
         if usage.cache_read_tokens or usage.cache_write_tokens:
-            parts.append(
-                f"cache {usage.cache_read_tokens}r/{usage.cache_write_tokens}w"
+            badges.append(
+                (
+                    f" cache {usage.cache_read_tokens:,}/{usage.cache_write_tokens:,} ",
+                    "black on grey62",
+                )
             )
         if cost is not None:
-            parts.append(f"${cost:.4f}")
-        self._console.print("-- " + " | ".join(parts), style="dim")
+            badges.append((f" ${cost:.4f} ", "black on magenta"))
+        line = Text()
+        for i, (label, style) in enumerate(badges):
+            if i:
+                line.append(" ")
+            line.append(label, style=style)
+        self._console.print(line)

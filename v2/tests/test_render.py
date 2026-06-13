@@ -89,7 +89,7 @@ def test_footer_reports_outcome_and_tokens():
         ]
     )
     assert "ok" in text
-    assert "10 in / 5 out" in text
+    assert "↑10" in text and "↓5" in text  # token badge
 
 
 def test_assistant_block_is_not_double_rendered():

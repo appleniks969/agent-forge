@@ -166,3 +166,26 @@ async def test_repl_survives_provider_failure(tmp_path: Path) -> None:
     )
     assert rc == 0
     assert "FatalProviderError" in out.getvalue()
+
+
+# --- paste collapse (regression: v1 had [+ N lines pasted]) ----------------------
+
+def test_paste_store_collapses_and_expands():
+    from forge.front.repl import _PasteStore
+
+    store = _PasteStore()
+    big = "\n".join(f"line {i}" for i in range(50))
+    marker = store.marker_for(big)
+    assert marker == "[+ 50 lines pasted]"
+    # A line containing the marker expands back to the full pasted content.
+    assert store.expand(f"see {marker} ok") == f"see {big} ok"
+
+
+def test_paste_store_expands_markers_in_order():
+    from forge.front.repl import _PasteStore
+
+    store = _PasteStore()
+    a = "\n".join(["a"] * 20)
+    b = "\n".join(["b"] * 30)
+    m1, m2 = store.marker_for(a), store.marker_for(b)
+    assert store.expand(f"{m1} then {m2}") == f"{a} then {b}"

@@ -65,7 +65,7 @@ from forge.ports.source import StaticToolSource, ToolSource
 from forge.ports.tool import Tool
 from forge.testing import FakeProvider
 
-DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TURNS = 40
 # Spec section 3.4 canonical location; jsonl_store.default_root() differs —
 # wiring picks the canonical one explicitly, as the store module documents.
