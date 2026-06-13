@@ -28,7 +28,7 @@ from forge.drive.executor import ToolExecutor
 from forge.drive.retry import RetryConfig, RetryingProvider
 from forge.kernel.events import Event, make_envelope
 from forge.kernel.state import SessionState, fold
-from forge.kernel.step import Cancelled, Policy, UserInput
+from forge.kernel.step import Cancelled, Policy, UserInput, step
 from forge.kernel.types import PermissionQuestion, TurnResult
 from forge.ports.asker import Asker
 from forge.ports.provider import Provider
@@ -88,6 +88,7 @@ class SessionHandle:
         self._store = store
         self._sid = sid if sid is not None else uuid.uuid4().hex
         self._parent = parent
+        self._policy = policy
         self._state = state if state is not None else SessionState()
         self._seq = store.next_seq()
         self._clock = clock
@@ -118,12 +119,30 @@ class SessionHandle:
 
     @classmethod
     def resume(cls, store: EventStore, **kwargs: object) -> SessionHandle:
-        """Seed live state as fold(log): resume and live are the same function."""
+        """Seed live state as fold(log): resume and live are the same function.
+
+        A log that ends mid-turn (a crash before TurnFinished) is repaired on
+        resume so the session is usable and the log stays well-formed."""
         log = store.replay()
         state = fold(log)
         sid = kwargs.pop("sid", None) or (log[0].sid if log else None)
         parent = kwargs.pop("parent", None) or (log[0].parent if log else None)
-        return cls(store=store, state=state, sid=sid, parent=parent, **kwargs)  # type: ignore[arg-type]
+        handle = cls(store=store, state=state, sid=sid, parent=parent, **kwargs)  # type: ignore[arg-type]
+        handle._repair_open_turn()
+        return handle
+
+    def _repair_open_turn(self) -> None:
+        """Seal a turn the log left open (process killed before TurnFinished):
+        step a Cancelled to emit placeholder tool results + TurnFinished(aborted)
+        and persist them, so the session accepts new input and fold(log) == live.
+        Without this, a resumed mid-turn state has in_turn=True and the kernel
+        ignores every subsequent UserInput — a bricked session."""
+        if not self._state.in_turn or self._state.finished:
+            return
+        sealed = step(self._state, Cancelled(), self._policy)
+        for event in sealed.events:
+            self._emit(event)
+        self._state = sealed.state
 
     @property
     def sid(self) -> str:

@@ -41,12 +41,20 @@ def default_root() -> Path:
 class JsonlStore:
     """Append-only EventStore over one JSONL file per session."""
 
-    def __init__(self, root: Path, sid: str, *, redactor: Redactor | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        sid: str,
+        *,
+        redactor: Redactor | None = None,
+        cwd: str | None = None,
+    ) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
         self._sid = sid
         self._path = self._root / f"{sid}.jsonl"
         self._redactor = redactor
+        self._cwd = cwd  # recorded in the index so `--continue` is per-project
         self._fh: TextIO | None = None
         self._next_seq = self._recover()
 
@@ -122,11 +130,16 @@ class JsonlStore:
             index = _read_index(self._root)
             if index is None:
                 index = _scan_logs(self._root)
-            index[self._sid] = {
+            entry: dict[str, Any] = {
                 "path": str(self._path),
                 "last_seq": last_seq,
                 "updated_at": time.time(),
             }
+            # Preserve a known cwd across appends that don't carry one.
+            cwd = self._cwd or index.get(self._sid, {}).get("cwd")
+            if cwd is not None:
+                entry["cwd"] = cwd
+            index[self._sid] = entry
             _write_index(self._root, index)
         except OSError:
             pass
@@ -150,11 +163,58 @@ def rebuild_index(root: Path) -> dict[str, dict[str, Any]]:
     return index
 
 
-def latest_sid(root: Path) -> str | None:
+def latest_sid(root: Path, *, cwd: str | None = None) -> str | None:
+    """Most recently updated session sid, optionally restricted to one cwd."""
     index = load_index(root)
-    if not index:
+    items = [
+        (sid, e)
+        for sid, e in index.items()
+        if cwd is None or e.get("cwd") == cwd
+    ]
+    if not items:
         return None
-    return max(index.items(), key=lambda kv: kv[1]["updated_at"])[0]
+    return max(items, key=lambda kv: kv[1]["updated_at"])[0]
+
+
+def session_summaries(
+    root: Path, *, cwd: str | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Recent sessions newest-first: sid, cwd, updated_at, and the first prompt
+    (read from each log's first UserSubmitted event). For `forge sessions`."""
+    index = load_index(root)
+    rows = [
+        (sid, e)
+        for sid, e in index.items()
+        if cwd is None or e.get("cwd") == cwd
+    ]
+    rows.sort(key=lambda kv: kv[1].get("updated_at", 0), reverse=True)
+    out: list[dict[str, Any]] = []
+    for sid, e in rows[:limit]:
+        out.append(
+            {
+                "sid": sid,
+                "cwd": e.get("cwd"),
+                "updated_at": e.get("updated_at", 0.0),
+                "prompt": _first_prompt(Path(e.get("path", root / f"{sid}.jsonl"))),
+            }
+        )
+    return out
+
+
+def _first_prompt(path: Path) -> str:
+    """The first UserSubmitted text in a log, for session listings; '' if none."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict) and rec.get("kind") == "UserSubmitted":
+                    return str(rec.get("body", {}).get("text", ""))[:80]
+    except OSError:
+        return ""
+    return ""
 
 
 def _read_index(root: Path) -> dict[str, dict[str, Any]] | None:

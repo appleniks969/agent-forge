@@ -186,9 +186,10 @@ One line per public symbol, grouped by layer in dependency order.
 ### `forge.adapters.jsonl_store` — JsonlStore: fsync'd append-only JSONL EventStore with a sidecar index.
 - `class JsonlStore` — Append-only EventStore over one JSONL file per session. (methods: append, close, next_seq, path, replay, sid)
 - `default_root() -> Path`
-- `latest_sid(root: Path) -> str | None`
+- `latest_sid(root: Path, *, cwd: str | None = None) -> str | None` — Most recently updated session sid, optionally restricted to one cwd.
 - `load_index(root: Path) -> dict[str, dict[str, Any]]` — Read the sidecar index, rebuilding by scan if missing or corrupt.
 - `rebuild_index(root: Path) -> dict[str, dict[str, Any]]`
+- `session_summaries(root: Path, *, cwd: str | None = None, limit: int = 20) -> list[dict[str, Any]]` — Recent sessions newest-first: sid, cwd, updated_at, and the first prompt
 
 ### `forge.adapters.mcp` — adapters.mcp: the MCP manager that manufactures Tools.
 
@@ -286,7 +287,7 @@ One line per public symbol, grouped by layer in dependency order.
 - `@dataclass Settings(provider: Literal['anthropic', 'fake'], model: str, api_key: str | None, max_turns: int, ws_root: Path, sessions_root: Path, cache_ttl: str | None = None, mcp_configs: tuple[MCPServerConfig, ...] = ())`
 - `class WiringError(Exception)` — Composition failure the CLI reports as exit code 2 (e.g. no credentials).
 - `build_provider(settings: Settings) -> Provider`
-- `build_session(settings: Settings, *, provider: Provider, asker: Asker, context_tokens: int, sid: str | None = None, source: ToolSource | None = None) -> SessionHandle`
+- `build_session(settings: Settings, *, provider: Provider, asker: Asker, context_tokens: int, sid: str | None = None, source: ToolSource | None = None, resume: bool = False) -> SessionHandle`
 - `build_tool_source(manager: MCPManager | None, roots: Sequence[Path] = ()) -> ToolSource` — ONE source feeds the executor and the prompt's tools supplier; the
 - `async connect_mcp(settings: Settings) -> MCPManager | None` — Auto-enable: a manager exists iff any config resolved; connect failures
 - `fake_script() -> list[ModelOutput]`

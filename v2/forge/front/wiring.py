@@ -24,13 +24,14 @@ import asyncio
 import os
 import platform as platform_mod
 import sys
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from forge.adapters.jsonl_store import JsonlStore
+from forge.adapters.jsonl_store import JsonlStore, latest_sid, session_summaries
 from forge.adapters.mcp.manager import (
     MCPManager,
     MCPServerConfig,
@@ -242,6 +243,7 @@ def build_session(
     context_tokens: int,
     sid: str | None = None,
     source: ToolSource | None = None,
+    resume: bool = False,
 ) -> SessionHandle:
     ws = RootedWorkspace(settings.ws_root)
     roots = skill_roots(settings.ws_root)
@@ -270,9 +272,10 @@ def build_session(
         max_turns=settings.max_turns,
     )
     sid = sid if sid is not None else uuid.uuid4().hex
-    store = JsonlStore(settings.sessions_root, sid)
+    store = JsonlStore(settings.sessions_root, sid, cwd=str(settings.ws_root))
     executor = ToolExecutor(src, ws)
-    return SessionHandle.open(
+    factory = SessionHandle.resume if resume else SessionHandle.open
+    return factory(
         store, provider=provider, executor=executor, policy=policy, asker=asker, sid=sid
     )
 
@@ -309,6 +312,19 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="skip mcp.toml loading (--mcp-server flags still apply)",
     )
+    parser.add_argument(
+        "--continue",
+        dest="continue_",
+        action="store_true",
+        help="resume the most recent session in this directory",
+    )
+    parser.add_argument(
+        "--resume",
+        dest="resume",
+        metavar="SID",
+        default=None,
+        help="resume a session by id (see `forge sessions`)",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -325,10 +341,53 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit the run record as JSON on stdout (rendering goes to stderr)",
     )
+    sessions = sub.add_parser("sessions", help="list recent sessions in this directory")
+    sessions.add_argument(
+        "--all", action="store_true", help="all directories, not just this one"
+    )
     return parser
 
 
-async def _run_main(settings: Settings, *, prompt: str, json_out: bool) -> int:
+def _resolve_resume(args: argparse.Namespace, settings: Settings) -> str | None:
+    """The sid to resume (None = fresh session). --resume wins over --continue."""
+    sid = getattr(args, "resume", None)
+    if sid:
+        return sid
+    if getattr(args, "continue_", False):
+        latest = latest_sid(settings.sessions_root, cwd=str(settings.ws_root))
+        if latest is None:
+            raise WiringError("no session to continue in this directory")
+        return latest
+    return None
+
+
+def _print_sessions(settings: Settings, *, all_dirs: bool) -> int:
+    cwd = None if all_dirs else str(settings.ws_root)
+    rows = session_summaries(settings.sessions_root, cwd=cwd)
+    if not rows:
+        print("no sessions yet", file=sys.stderr)
+        return 0
+    now = time.time()
+    for r in rows:
+        age = _format_age(now - r["updated_at"])
+        prompt = r["prompt"] or "(no prompt)"
+        print(f"{r['sid'][:12]}  {age:>8}  {prompt}")
+    return 0
+
+
+def _format_age(seconds: float) -> str:
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
+
+
+async def _run_main(
+    settings: Settings, *, prompt: str, json_out: bool, resume_sid: str | None = None
+) -> int:
     provider = build_provider(settings)
     info = await provider.info(settings.model)
     manager = await connect_mcp(settings)
@@ -339,6 +398,8 @@ async def _run_main(settings: Settings, *, prompt: str, json_out: bool) -> int:
             asker=oneshot.StaticAsker(allow=False),
             context_tokens=info.context_tokens,
             source=build_tool_source(manager, skill_roots(settings.ws_root)),
+            sid=resume_sid,
+            resume=resume_sid is not None,
         )
         renderer = Renderer(
             out=sys.stderr if json_out else sys.stdout, pricing=info.pricing
@@ -358,7 +419,7 @@ async def _run_main(settings: Settings, *, prompt: str, json_out: bool) -> int:
             await manager.aclose()
 
 
-async def _repl_main(settings: Settings) -> int:
+async def _repl_main(settings: Settings, *, resume_sid: str | None = None) -> int:
     info = await build_provider(settings).info(settings.model)
     asker = repl.ConsoleAsker()
     roots = skill_roots(settings.ws_root)
@@ -366,8 +427,11 @@ async def _repl_main(settings: Settings) -> int:
     # /clear: a fresh session reuses the same live toolset.
     manager = await connect_mcp(settings)
     source = build_tool_source(manager, roots)
+    first = [True]  # resume only the first session; /clear makes fresh ones
 
     async def make_session() -> SessionHandle:
+        do_resume = first[0] and resume_sid is not None
+        first[0] = False
         # A fresh provider per session: /clear gets a clean fake script too.
         return build_session(
             settings,
@@ -375,6 +439,8 @@ async def _repl_main(settings: Settings) -> int:
             asker=asker,
             context_tokens=info.context_tokens,
             source=source,
+            sid=resume_sid if do_resume else None,
+            resume=do_resume,
         )
 
     try:
@@ -410,11 +476,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         settings = load_settings(args)
+        if args.cmd == "sessions":
+            return _print_sessions(settings, all_dirs=args.all)
+        resume_sid = _resolve_resume(args, settings)
         if args.cmd == "run":
             return asyncio.run(
-                _run_main(settings, prompt=args.prompt, json_out=args.json)
+                _run_main(
+                    settings, prompt=args.prompt, json_out=args.json, resume_sid=resume_sid
+                )
             )
-        return asyncio.run(_repl_main(settings))
+        return asyncio.run(_repl_main(settings, resume_sid=resume_sid))
     except WiringError as exc:
         print(f"forge: {exc}", file=sys.stderr)
         return 2

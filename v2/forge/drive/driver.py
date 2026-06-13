@@ -95,53 +95,65 @@ class Driver:
         queue: deque[Input] = deque([inp])
         result: TurnResult | None = None
         error: BaseException | None = None
-        while queue:
-            cur = queue.popleft()
-            if self._cancel.is_set() and not isinstance(cur, Cancelled):
-                queue.clear()
-                cur = Cancelled()
-            st = step(state, cur, self._policy)
-            state = st.state
-            for event in st.events:
-                self._publish(event)
-            interrupted = False
-            for eff in st.effects:
-                match eff:
-                    case Finish(result=res):
-                        result = res
-                    case CallModel():
-                        try:
-                            out = await self._race(
-                                self._provider.complete(eff.request, on_delta=self._on_delta)
-                            )
-                        except (TransientProviderError, FatalProviderError) as exc:
-                            error = exc
-                            interrupted = True
-                            break
-                        if out is _CANCELLED:
-                            interrupted = True
-                            break
-                        if isinstance(self._policy, CalibratesFromUsage):
-                            # Before the fold: stepping ModelResponded builds the
-                            # next request, which would overwrite the estimate
-                            # this Usage pairs with.
-                            self._policy.observe_usage(out.usage)
-                        queue.append(ModelResponded(output=out, request=eff.request))
-                    case RunTools(calls=calls):
-                        outcomes = await self._run_tools(calls)
-                        if outcomes is _CANCELLED:
-                            interrupted = True
-                            break
-                        queue.extend(ToolOutcome(result=r) for r in outcomes)
-                    case AskUser(question=question):
-                        allow = await self._race(self._asker.ask(question))
-                        if allow is _CANCELLED:
-                            interrupted = True
-                            break
-                        queue.append(PermissionAnswer(question.call_id, bool(allow)))
-            if interrupted:
-                queue.clear()
-                queue.append(Cancelled())
+        try:
+            while queue:
+                cur = queue.popleft()
+                if self._cancel.is_set() and not isinstance(cur, Cancelled):
+                    queue.clear()
+                    cur = Cancelled()
+                st = step(state, cur, self._policy)
+                state = st.state
+                for event in st.events:
+                    self._publish(event)
+                interrupted = False
+                for eff in st.effects:
+                    match eff:
+                        case Finish(result=res):
+                            result = res
+                        case CallModel():
+                            try:
+                                out = await self._race(
+                                    self._provider.complete(eff.request, on_delta=self._on_delta)
+                                )
+                            except (TransientProviderError, FatalProviderError) as exc:
+                                error = exc
+                                interrupted = True
+                                break
+                            if out is _CANCELLED:
+                                interrupted = True
+                                break
+                            if isinstance(self._policy, CalibratesFromUsage):
+                                # Before the fold: stepping ModelResponded builds the
+                                # next request, which would overwrite the estimate
+                                # this Usage pairs with.
+                                self._policy.observe_usage(out.usage)
+                            queue.append(ModelResponded(output=out, request=eff.request))
+                        case RunTools(calls=calls):
+                            outcomes = await self._run_tools(calls)
+                            if outcomes is _CANCELLED:
+                                interrupted = True
+                                break
+                            queue.extend(ToolOutcome(result=r) for r in outcomes)
+                        case AskUser(question=question):
+                            allow = await self._race(self._asker.ask(question))
+                            if allow is _CANCELLED:
+                                interrupted = True
+                                break
+                            queue.append(PermissionAnswer(question.call_id, bool(allow)))
+                if interrupted:
+                    queue.clear()
+                    queue.append(Cancelled())
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as exc:  # noqa: BLE001 — an effect/step raised
+            # Seal the open turn so the log keeps a TurnFinished and resume stays
+            # well-formed; surface the error to the caller (committed-then-raise).
+            if state.in_turn and not state.finished:
+                sealed = step(state, Cancelled(), self._policy)
+                state = sealed.state
+                for ev in sealed.events:
+                    self._publish(ev)
+            error = exc
         return TurnReport(state=state, result=result, error=error)
 
     def _on_delta(self, delta: Delta) -> None:

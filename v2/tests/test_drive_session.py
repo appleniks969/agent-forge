@@ -49,6 +49,49 @@ def tc(cid: str, name: str) -> ToolCall:
     return ToolCall(id=cid, name=name, args={})
 
 
+async def test_resume_repairs_a_crashed_mid_turn_log(tmp_path: Path) -> None:
+    # A process killed after TurnStarted but before TurnFinished leaves a log
+    # that folds to in_turn=True — without repair the session ignores all input.
+    from forge.kernel.events import TurnStarted, UserSubmitted, make_envelope
+
+    store = MemoryStore()
+    store.append(make_envelope(0, "s", body=UserSubmitted("do a thing")))
+    store.append(make_envelope(1, "s", body=TurnStarted(1)))
+    assert fold(store.replay()).in_turn is True  # the bricked state
+
+    resumed = SessionHandle.resume(
+        store,
+        provider=FakeProvider([mk_out(TextBlock("recovered"))]),
+        executor=ToolExecutor((), StubWorkspace(tmp_path)),
+        policy=SimPolicy(),
+    )
+    # Repair sealed the open turn and persisted it: not in_turn, fold == live.
+    assert resumed.state.in_turn is False
+    assert fold(store.replay()) == resumed.state
+    assert any(isinstance(e.body, TurnFinished) for e in store.replay())
+    # The session is usable again — a fresh turn runs to completion.
+    result = await resumed.submit("continue")
+    assert result is not None and result.outcome == "ok"
+
+
+async def test_run_turn_seals_log_on_unexpected_provider_error(tmp_path: Path) -> None:
+    # A non-port exception escaping the provider must not leave the log open:
+    # the driver catch-all seals the turn with a TurnFinished and re-raises.
+    store = MemoryStore()
+    handle = SessionHandle.open(
+        store,
+        provider=FakeProvider([ValueError("boom")]),
+        executor=ToolExecutor((), StubWorkspace(tmp_path)),
+        policy=SimPolicy(),
+    )
+    with pytest.raises(ValueError, match="boom"):
+        await handle.submit("hi")
+    # Log is well-formed (has a TurnFinished) and fold == live: resume is safe.
+    assert any(isinstance(e.body, TurnFinished) for e in store.replay())
+    assert fold(store.replay()) == handle.state
+    assert handle.state.in_turn is False
+
+
 async def test_submit_returns_result_and_folds_back(tmp_path: Path) -> None:
     handle, store = handle_for(tmp_path, [mk_out(TextBlock("hello"))])
     result = await handle.submit("hi")

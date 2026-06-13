@@ -325,3 +325,28 @@ async def test_satisfies_event_store_port_and_close(tmp_path: Path) -> None:
 def test_default_root_points_home(tmp_path: Path) -> None:
     assert default_root() == Path.home() / ".forge" / "sessions"
     assert latest_sid(tmp_path) is None  # empty root: no sessions, no crash
+
+
+# --- per-cwd session listing (for `forge --continue` / `forge sessions`) ---------
+
+def test_latest_sid_and_summaries_filter_by_cwd(tmp_path):
+    from forge.adapters.jsonl_store import JsonlStore, latest_sid, session_summaries
+    from forge.kernel.events import UserSubmitted, make_envelope
+
+    def write(sid, cwd, text):
+        s = JsonlStore(tmp_path, sid, cwd=cwd)
+        s.append(make_envelope(0, sid, body=UserSubmitted(text)))
+        return s
+
+    write("a", "/proj/x", "alpha")
+    write("b", "/proj/y", "beta")
+    write("c", "/proj/x", "gamma")
+
+    # latest_sid scoped to a cwd ignores other directories' sessions.
+    assert latest_sid(tmp_path, cwd="/proj/x") == "c"
+    assert latest_sid(tmp_path, cwd="/proj/y") == "b"
+    assert latest_sid(tmp_path) in {"a", "b", "c"}  # global: most recent
+
+    rows = session_summaries(tmp_path, cwd="/proj/x")
+    assert [r["sid"] for r in rows] == ["c", "a"]  # newest first, x only
+    assert rows[0]["prompt"] == "gamma"  # first-prompt preview from the log
