@@ -1,0 +1,107 @@
+{
+  "label": "forge v2 greenfield (sans-IO kernel) \u2014 head-to-head vs v1",
+  "capturedAt": "2026-06-11",
+  "model": "claude-sonnet-4-6",
+  "source": "automated \u2014 sequential runs, isolated parent dirs + cleared state per tool; v1 via --prompt --verbose footer, v2 via forge run --json (v2 cost computed from usage at $3/$15/$0.30/$3.75 per M, same rates v1 prices with)",
+  "tool": "forge-v2",
+  "simpleTasks": {
+    "total": {
+      "cost": 0.3953,
+      "tasks": 3,
+      "avgTurns": 11.7
+    },
+    "S1_palindrome": {
+      "turns": 5,
+      "cost": 0.0542,
+      "inputTokens": 14,
+      "outputTokens": 1843,
+      "cacheRead": 8444,
+      "cacheWrite": 6396,
+      "cacheHitRate": 99.8
+    },
+    "S2_queue": {
+      "turns": 15,
+      "cost": 0.141,
+      "inputTokens": 24,
+      "outputTokens": 5892,
+      "cacheRead": 67693,
+      "cacheWrite": 8585,
+      "cacheHitRate": 100.0
+    },
+    "S3_debounce": {
+      "turns": 15,
+      "cost": 0.2001,
+      "inputTokens": 24,
+      "outputTokens": 7954,
+      "cacheRead": 102234,
+      "cacheWrite": 13346,
+      "cacheHitRate": 100.0
+    }
+  },
+  "complexTasks": {
+    "total": {
+      "cost": 0.4817,
+      "tasks": 3,
+      "avgTurns": 15.7
+    },
+    "C1_lruCache": {
+      "turns": 12,
+      "cost": 0.1672,
+      "inputTokens": 21,
+      "outputTokens": 7208,
+      "cacheRead": 70344,
+      "cacheWrite": 10098,
+      "cacheHitRate": 100.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCount": 40,
+      "testPassCount": 40,
+      "qualityScore": 8.0,
+      "qualityNotes": "Same sentinel DLL + Map core, but a verified artifact: clean compile on TS 6, 40/40, reproducible build (lockfile, @types/node), rigorous assertThrows harness. Deductions: has()/delete()/entries() scope creep (~9 assertions on unrequested surface); dead guard in _evictLRU; DOM lib in a Node project."
+    },
+    "C2_rateLimiter": {
+      "turns": 14,
+      "cost": 0.1241,
+      "inputTokens": 23,
+      "outputTokens": 5097,
+      "cacheRead": 63467,
+      "cacheWrite": 7612,
+      "cacheHitRate": 100.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCount": 14,
+      "testPassCount": 14,
+      "qualityScore": 7.0,
+      "qualityNotes": "Number.isFinite validation everywhere; documented RangeError on tokens>capacity (avoids v1's forever-false trap); 5 assertThrows failure-path tests. Caveats: one async test never awaited (its assertion can't fail the suite); tsconfig include skips the test file so tests are never type-checked; no injectable clock."
+    },
+    "C3_eventEmitter": {
+      "turns": 21,
+      "cost": 0.1904,
+      "inputTokens": 30,
+      "outputTokens": 6765,
+      "cacheRead": 125700,
+      "cacheWrite": 13641,
+      "cacheHitRate": 100.0,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCount": 5,
+      "testPassCount": 5,
+      "qualityScore": 5.0,
+      "qualityNotes": "Strong compile-time story (interface event maps accepted, all negative probes rejected). Runtime fails 4/6 adversarial probes: off() cannot cancel once() (wrapper identity bug contradicting its own JSDoc); live-Set iteration lets listeners added during emit fire in the same emit (100-deep re-entrancy confirmed); duplicate on() silently dedupes. Its 5 tests never touch the broken cases."
+    }
+  },
+  "overallQuality": {
+    "score": 6.62,
+    "basis": "4 graded units (3 complex head-to-head + simple tier), restraint-weighted adversarial rubric",
+    "strengths": [
+      "every artifact verified in-session (3/3 compile clean, all delivered tests pass)",
+      "strict input validation + documented error contracts",
+      "100% cache hit rate; honest --json telemetry"
+    ],
+    "weaknesses": [
+      "turn inflation: 1.6-5x v1 turns from compulsive full-project scaffolding",
+      "scope creep on simple prompts (restraint penalty)",
+      "real bugs the self-tests never touch: once/off wrapper identity, live-Set re-entrancy, palindrome default"
+    ]
+  }
+}

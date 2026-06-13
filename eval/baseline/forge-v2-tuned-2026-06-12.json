@@ -1,0 +1,25 @@
+{
+  "label": "forge v2 tuned (restraint prompt, branch v2-greenfield @ 30120e8) — full six-task re-run",
+  "capturedAt": "2026-06-12",
+  "source": "automated — sequential runs, isolated parent dirs + cleared state; forge run --json records; cost computed from usage at $3/$15/$0.30/$3.75 per M (same rates v1 prices with)",
+  "model": "claude-sonnet-4-6",
+  "tool": "forge-v2-tuned",
+  "simpleTasks": {
+    "total": { "cost": 0.0517, "tasks": 3, "avgTurns": 1.7 },
+    "S1_palindrome": { "turns": 1, "cost": 0.0134, "inputTokens": 10, "outputTokens": 335, "cacheRead": 0, "cacheWrite": 2230, "cacheHitRate": 0.0 },
+    "S2_queue":      { "turns": 3, "cost": 0.0253, "inputTokens": 12, "outputTokens": 722, "cacheRead": 3559, "cacheWrite": 3569, "cacheHitRate": 99.7 },
+    "S3_debounce":   { "turns": 1, "cost": 0.0130, "inputTokens": 10, "outputTokens": 602, "cacheRead": 1290, "cacheWrite": 947, "cacheHitRate": 99.2 }
+  },
+  "complexTasks": {
+    "total": { "cost": 0.2683, "tasks": 3, "avgTurns": 6.7 },
+    "C1_lruCache":    { "turns": 5, "cost": 0.0907, "inputTokens": 14, "outputTokens": 4222, "cacheRead": 16573, "cacheWrite": 5952, "cacheHitRate": 99.9, "compilesClean": false, "testsPassed": true, "testCount": 10, "testPassCount": 10, "qualityScore": 7.5, "qualityNotes": "Correct O(1) core, honest docs, 10/10 via node strip-types. Bare tsc --strict shows 2 ambient @types/node errors (judge: env gap, not code defect). Dings: unguarded top-level runTests() executes on import; unrequested has() untested." },
+    "C2_rateLimiter": { "turns": 5, "cost": 0.0710, "inputTokens": 14, "outputTokens": 3186, "cacheRead": 12548, "cacheWrite": 5175, "cacheHitRate": 99.9, "compilesClean": true, "testsPassed": true, "testCount": 5, "testPassCount": 5, "qualityScore": 8.5, "qualityNotes": "Injectable now() clock seam — deterministic exact-assertion time tests (burst cap, reset-timer), no sleeps. Compiles clean bare. Residual: NaN guard holes shared with v1; no throw-path tests." },
+    "C3_eventEmitter":{ "turns": 10, "cost": 0.1066, "inputTokens": 19, "outputTokens": 3954, "cacheRead": 40737, "cacheWrite": 9340, "cacheHitRate": 99.95, "compilesClean": true, "testsPassed": true, "testCount": 5, "testPassCount": 5, "qualityScore": 6.5, "qualityNotes": "Improved over untuned (re-entrant once, added-during-emit, compile probes all pass; interface event maps accepted) BUT off() still cannot cancel once() (wrapper identity bug, contradicts own JSDoc) and duplicate on() silently dedupes. Tests avoid its own danger zones." }
+  },
+  "overallQuality": {
+    "score": 7.83,
+    "basis": "4 graded units (3 complex head-to-head vs v1 + simple tier), restraint-weighted adversarial rubric; v1 scored 7.5 on the same rubric",
+    "strengths": ["restraint now correct: inline answers for one-liners, single files otherwise, zero scaffolding", "untuned punctuated-palindrome failure fixed at the default", "clock-seam rate limiter beats v1 decisively (8.5 vs 5.5)", "cheapest tool measured: beats v1 on cost AND turns on both tiers; complex tier under the pre-DDD target"],
+    "weaknesses": ["EventEmitter off-cancels-once bug persists (6.5 vs v1's 9.0)", "delivered .ts files sometimes lack exports / self-run compile check (s2)", "unguarded top-level test runners execute on import (c1)"]
+  }
+}

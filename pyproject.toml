@@ -1,50 +1,30 @@
-[project]
-name = "agent-forge"
-version = "1.0.0"
-description = "Minimal coding agent — 19 flat modules, async-generator loop"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "anthropic>=0.40.0",
-    "prompt-toolkit>=3.0",
-    "rich>=13.0",
-]
-
-[project.optional-dependencies]
-# MCP (Model Context Protocol) integration — Phase G of the ideal-design
-# plan. Tools come from a stdio MCP server (e.g. filesystem, github,
-# postgres). Install with `uv pip install -e .[mcp]`.
-mcp = ["mcp>=1.0"]
-
-[project.scripts]
-agent-forge = "agent_forge.chat:main"
-
-# ── Plugin entry-point group ──────────────────────────────────────────────────
-# Third-party packages can contribute plugins by declaring entries under this
-# group in their own pyproject.toml:
-#
-#   [project.entry-points."agent_forge.plugins"]
-#   my_plugin = "my_package.plugin:plugin"   # object reference
-#   my_plugin = "my_package.plugin:MyPlugin" # class reference (auto-instantiated)
-#
-# Alternatively, drop a .py file into ~/.agent-forge/plugins/ (global) or
-# <cwd>/.agent-forge/plugins/ (project) — no installation required.
-# Configure plugins via <cwd>/.agent-forge/plugins.toml:
-#   [plugins.my_plugin_name]
-#   enabled  = true
-#   api_key  = "..."
-#   base_url = "http://localhost:11434"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-dev-dependencies = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pdoc>=14.0",          # API doc generator (see scripts/build_api_docs.sh)
+[project]
+name = "forge"
+version = "0.1.0"
+description = "A sans-IO coding agent: a pure kernel over one append-only event log"
+requires-python = ">=3.12"
+dependencies = ["anthropic>=0.40", "rich>=13", "prompt_toolkit>=3"]
+
+[project.optional-dependencies]
+mcp = ["mcp"]
+
+[project.scripts]
+forge = "forge.front.wiring:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "hypothesis",
+    "import-linter",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["forge"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

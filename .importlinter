@@ -1,0 +1,28 @@
+[importlinter]
+root_package = forge
+
+; The import law:
+;   kernel imports nothing internal
+;   ports and policy import kernel only (and not each other)
+;   drive imports kernel + ports + policy
+;   adapters import ports + kernel
+;   testing imports ports + kernel
+;   front imports everything
+
+[importlinter:contract:layers]
+name = Layered import law (kernel < ports|policy < drive|adapters|testing < front)
+type = layers
+layers =
+    forge.front
+    forge.drive | forge.adapters | forge.testing
+    forge.policy | forge.ports
+    forge.kernel
+
+[importlinter:contract:policy-free-leaves]
+name = adapters and testing import ports + kernel only, never policy
+type = forbidden
+source_modules =
+    forge.adapters
+    forge.testing
+forbidden_modules =
+    forge.policy
