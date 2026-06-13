@@ -191,22 +191,24 @@ class Renderer:
         if cost is None and self._pricing is not None:
             cost = self._pricing.cost(usage)
         ok = ev.outcome == "ok"
-        badges: list[tuple[str, str]] = [
-            (f" {ev.outcome} ", "black on green" if ok else "white on red"),
-            (f" ↑{usage.input_tokens:,} ↓{usage.output_tokens:,} ", "black on bright_blue"),
-        ]
+        line = Text()
+        line.append("✓ " if ok else "✗ ", style="bold green" if ok else "bold red")
+        line.append(ev.outcome, style="green" if ok else "red")
+
+        def sep() -> None:
+            line.append("  ·  ", style="dim")
+
+        sep()
+        line.append(
+            f"↑{usage.input_tokens:,} ↓{usage.output_tokens:,}", style="dim"
+        )
         if usage.cache_read_tokens or usage.cache_write_tokens:
-            badges.append(
-                (
-                    f" cache {usage.cache_read_tokens:,}/{usage.cache_write_tokens:,} ",
-                    "black on grey62",
-                )
+            sep()
+            line.append(
+                f"cache {usage.cache_read_tokens:,}/{usage.cache_write_tokens:,}",
+                style="dim",
             )
         if cost is not None:
-            badges.append((f" ${cost:.4f} ", "black on magenta"))
-        line = Text()
-        for i, (label, style) in enumerate(badges):
-            if i:
-                line.append(" ")
-            line.append(label, style=style)
+            sep()
+            line.append(f"${cost:.4f}", style="green")
         self._console.print(line)
