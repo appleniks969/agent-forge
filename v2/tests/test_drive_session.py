@@ -203,19 +203,36 @@ async def test_cancel_aborts_turn(tmp_path: Path) -> None:
     assert_matched_pairs(handle.state)
 
 
-async def test_close_logs_session_ended_and_closes_store(tmp_path: Path) -> None:
+async def test_close_idle_leaves_session_resumable(tmp_path: Path) -> None:
+    # Closing an idle session must NOT mark it finished or write SessionEnded —
+    # the conversation has to survive process exit so `forge --continue` can
+    # reopen it. The log simply ends after its last TurnFinished.
     handle, store = handle_for(tmp_path, [mk_out(TextBlock("hi"))])
     sub = handle.subscribe()
     await handle.submit("go")
     await handle.close()
-    assert isinstance(store.replay()[-1].body, SessionEnded)
     assert store.closed
-    assert handle.state.finished
+    assert handle.state.finished is False
+    assert not any(isinstance(e.body, SessionEnded) for e in store.replay())
+    assert isinstance(store.replay()[-1].body, TurnFinished)
     seen = [env async for env in sub]  # close ended the subscription
-    assert isinstance(seen[-1].body, SessionEnded)
+    assert seen  # delivered the turn's events
     with pytest.raises(RuntimeError):
-        await handle.submit("again")
+        await handle.submit("again")  # the handle is closed; a new one resumes
     await handle.close()  # idempotent
+
+
+async def test_close_mid_turn_seals_with_turnfinished(tmp_path: Path) -> None:
+    # Closing DURING a turn still seals it (aborted) so the log stays well-formed.
+    handle, store = handle_for(
+        tmp_path, [mk_out(tc("c1", "block"))], tools=(BlockingTool("block"),)
+    )
+    task = asyncio.create_task(handle.submit("go"))
+    await asyncio.sleep(0.01)
+    await handle.close()  # cancels the in-flight turn; it seals as aborted
+    await task  # completes gracefully, not by raising
+    assert isinstance(store.replay()[-1].body, TurnFinished)
+    assert fold(store.replay()) == handle.state
 
 
 async def test_usage_accumulates_across_turns(tmp_path: Path) -> None:

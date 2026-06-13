@@ -189,7 +189,10 @@ async def test_close_after_scenarios_keeps_fold_equal(tmp_path: Path) -> None:
     await handle.submit("go")
     await handle.close()
     assert fold(store.replay()) == handle.state
-    assert handle.state.finished
+    # An idle close leaves the session resumable (not finished); the log ends
+    # after its last TurnFinished and fold == live still holds.
+    assert handle.state.finished is False
+    assert isinstance(store.replay()[-1].body, TurnFinished)
 
 
 # --- hypothesis: interleavings -------------------------------------------------

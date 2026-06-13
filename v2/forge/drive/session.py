@@ -188,7 +188,12 @@ class SessionHandle:
                 return
             self._closed = True
             self._cancel.clear()
-            if not self._state.finished:
+            # Seal only a mid-turn (so an interrupted turn keeps a TurnFinished
+            # and the log stays well-formed). An IDLE session is NOT marked
+            # finished — closing the handle (process exit) must not terminate the
+            # conversation, or `forge --continue` could never reopen it. A
+            # resumable log simply ends after its last TurnFinished.
+            if self._state.in_turn and not self._state.finished:
                 report = await self._driver.run_turn(self._state, Cancelled())
                 self._state = report.state
             self._bus.close()
