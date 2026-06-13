@@ -46,6 +46,15 @@ def test_thinking_and_answer_do_not_concatenate():
     assert "391" in text  # the answer still renders
 
 
+def test_thinking_renders_as_a_visible_block():
+    # Thinking content is shown in its own block (not collapsed to a marker),
+    # separate from the answer.
+    text = _drive([ThinkingDelta("weighing options"), TextDelta("the answer")])
+    assert "thinking" in text  # the block label
+    assert "weighing options" in text  # the reasoning is visible
+    assert "the answer" in text
+
+
 def test_answer_renders_as_markdown_heading():
     text = _drive([TextDelta("# Title\n\nbody")])
     assert "Title" in text

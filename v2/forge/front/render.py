@@ -1,10 +1,11 @@
 """Renderer: a bus subscriber that draws envelopes with Rich.
 
 Layer: front — imports kernel only. The Renderer is an OBJECT with its own
-streaming state (no module globals). Model answers stream as live Markdown
-(code blocks syntax-highlighted, tables aligned); thinking streams dim in a
-SEPARATE region above the answer, so reasoning and answer never run together
-(the old plain renderer concatenated 'thinking' + 'answer' on one line).
+streaming state (no module globals). A turn renders as two distinct blocks:
+the model's reasoning in a dim bordered "thinking" panel above, and the answer
+rendered as Markdown below (code blocks syntax-highlighted, tables aligned).
+They never run together (the old plain renderer concatenated 'thinking' +
+'answer' on one line — the 391391 bug).
 Tool calls get one-liners, and TurnFinished prints a footer with tokens plus
 cost when pricing is known (the kernel always logs cost as None — pricing is
 provider knowledge injected by wiring). AssistantBlock events are ignored:
@@ -21,9 +22,10 @@ import sys
 from collections.abc import Mapping
 from typing import Any, TextIO
 
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.text import Text
 
 from forge.kernel.events import (
@@ -72,8 +74,8 @@ class Renderer:
         # force_terminal=None lets Rich auto-detect; an explicit color= overrides.
         self._console = Console(file=out, force_terminal=color, highlight=False)
         self._pricing = pricing
-        self._think = ""  # accumulated thinking text for the current run
-        self._text = ""  # accumulated answer markdown for the current run
+        self._buf = ""  # text accumulated for the current block
+        self._channel: str | None = None  # "think" | "text" — the current block
         self._live: Live | None = None
 
     # -- event dispatch ---------------------------------------------------------
@@ -81,11 +83,9 @@ class Renderer:
     def handle(self, env: Envelope) -> None:
         match env.body:
             case TextDelta(text):
-                self._text += text
-                self._refresh()
+                self._stream(text, "text")
             case ThinkingDelta(text):
-                self._think += text
-                self._refresh()
+                self._stream(text, "think")
             case ToolDeclared(call):
                 self._flush()
                 self._console.print(
@@ -114,21 +114,28 @@ class Renderer:
             case _:
                 pass  # AssistantBlock duplicates deltas; the rest carry no UI
 
-    # -- streaming region (thinking + answer) -----------------------------------
+    # -- streaming blocks (one block per channel run) ---------------------------
+
+    def _stream(self, text: str, channel: str) -> None:
+        # A channel switch (think→text or text→think) finalizes the current
+        # block before the next one starts, so the thinking panel is sealed in
+        # scrollback before the answer streams below it.
+        if self._channel is not None and channel != self._channel:
+            self._flush()
+        self._channel = channel
+        self._buf += text
+        self._refresh()
 
     def _renderable(self) -> RenderableType:
-        parts: list[RenderableType] = []
-        if self._think:
-            # While thinking streams (no answer yet), show it dim and live.
-            # Once the answer starts, collapse it to a one-line marker so the
-            # rendered answer is what stays in scrollback.
-            if self._text:
-                parts.append(Text("✓ thought", style="dim"))
-            else:
-                parts.append(Text(self._think, style="dim"))
-        if self._text:
-            parts.append(Markdown(self._text))
-        return Group(*parts)
+        if self._channel == "think":
+            return Panel(
+                Text(self._buf, style="dim"),
+                title="thinking",
+                title_align="left",
+                border_style="dim",
+                padding=(0, 1),
+            )
+        return Markdown(self._buf)
 
     def _refresh(self) -> None:
         if not self._console.is_terminal:
@@ -145,21 +152,19 @@ class Renderer:
             self._live.update(self._renderable())
 
     def _flush(self) -> None:
-        """End the current streaming run: finalize the Live region (terminal)
-        or print the accumulated content once (piped), then reset buffers."""
-        if not self._think and not self._text:
+        """Seal the current block: finalize the Live region (terminal) or print
+        the accumulated block once (piped), then reset for the next block."""
+        if not self._buf:
+            self._channel = None
             return
         if self._live is not None:
             self._live.update(self._renderable())
             self._live.stop()
             self._live = None
         else:
-            # Non-terminal: render the answer once; thinking is omitted from
-            # captured output to keep --json/test streams to the answer + footer.
-            if self._text:
-                self._console.print(Markdown(self._text))
-        self._think = ""
-        self._text = ""
+            self._console.print(self._renderable())  # non-terminal: render once
+        self._buf = ""
+        self._channel = None
 
     # -- discrete lines ---------------------------------------------------------
 
