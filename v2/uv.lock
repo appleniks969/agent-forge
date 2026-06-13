@@ -216,6 +216,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -235,6 +236,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "mcp", marker = "extra == 'mcp'" },
+    { name = "rich", specifier = ">=13" },
 ]
 provides-extras = ["mcp"]
 
