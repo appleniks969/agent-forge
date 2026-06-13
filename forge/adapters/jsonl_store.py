@@ -149,7 +149,12 @@ class JsonlStore:
 
 
 def load_index(root: Path) -> dict[str, dict[str, Any]]:
-    """Read the sidecar index, rebuilding by scan if missing or corrupt."""
+    """Read the sidecar index, rebuilding by scan if missing or corrupt.
+
+    A not-yet-created sessions root has no sessions and is read-only here
+    (`forge sessions` before the first run must not try to create/write it)."""
+    if not Path(root).is_dir():
+        return {}
     index = _read_index(Path(root))
     if index is None:
         index = rebuild_index(root)

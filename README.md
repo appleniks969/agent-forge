@@ -1,184 +1,113 @@
-# agent-forge
+# forge
 
-A minimal Python coding agent — interactive REPL backed by Claude.
+![forge architecture](docs/architecture.svg)
 
-```
-cd /your/project
-agent-forge
-> explain this codebase
-```
+A coding-agent REPL built as a pure decision kernel over one append-only event
+log. The kernel does no I/O; every model call, tool run, and permission verdict
+is a replayable event. `fold(log) == live state`, so resume is just replay.
 
----
+## Install & run
 
-## Install
+Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
 
-Requires Python 3.12+ on macOS or Linux.
-
-```bash
-git clone <repo-url> agent-forge
-cd agent-forge
-bash install.sh
+```sh
+uv tool install '.[mcp]'                # puts `forge` on your PATH
+export ANTHROPIC_API_KEY=sk-...         # or CLAUDE_CODE_OAUTH_TOKEN
+forge                                   # interactive REPL; /help lists commands
+forge run -p "list the python files here" --json   # one shot; JSON record on stdout
 ```
 
-The installer installs `uv` if missing, runs `uv tool install .`, puts the `agent-forge` binary on `~/.local/bin`, and adds that path to your shell rc if needed. Open a new terminal (or `source ~/.zshrc`) and verify:
+No credentials? Smoke-test offline with the scripted provider:
 
-```bash
-agent-forge --help
+```sh
+forge run -p "hello" --provider fake --json
 ```
 
-## Set your API key
+Default model is `claude-sonnet-4-6`; override with `--model <id>` or `FORGE_MODEL`.
+In one-shot mode, put flags after `run` — flags before the subcommand are ignored.
 
-Pick **one**:
+Developing on the repo instead of installing? Use `uv run forge ...`.
 
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."         # team / org use
-export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat-..."  # personal account
+## Sessions
+
+Every turn is persisted as an event log under `~/.agent-forge/sessions/`.
+
+```sh
+forge sessions          # list this directory's sessions (id, age, first prompt)
+forge --continue        # resume the most recent session here
+forge --resume <id>     # resume a specific session
 ```
 
-Make it permanent in `~/.zshrc` or `~/.bashrc`.
+Resume restores the full conversation from the log, and a session killed
+mid-turn is repaired on resume rather than left wedged.
 
-## Quick start
+## Add a tool
 
-```bash
-cd /your/project
-agent-forge                                   # interactive REPL
-agent-forge --prompt "fix the failing tests"  # one-shot, exits when done
+Write a class with a `spec` and an async `run`. Tools return error results, never raise.
+
+```python
+from forge.kernel.types import Effects, ToolResult, ToolSpec
+from forge.ports.tool import ToolCtx
+
+class WordCount:
+    spec = ToolSpec(
+        name="WordCount",
+        description="Count words in a file.",
+        params={"type": "object",
+                "properties": {"path": {"type": "string", "format": "path"}},
+                "required": ["path"]},
+        effects=Effects.READ_PATH,
+    )
+
+    async def run(self, args, ctx: ToolCtx) -> ToolResult:
+        text = ctx.ws.resolve(args["path"]).read_text()
+        return ToolResult(call_id="", content=str(len(text.split())))
 ```
 
-Optional — the **agent-forge-wiki skill** indexes your repo's history (commits,
-PRs, hotspots, code markers, notes) into schema'd bundles and LLM-compiled
-narrative pages. It ships in this repo at `.claude/skills/agent-forge-wiki/`,
-auto-discovered by Claude Code agents working here.
+Wire it: add `WordCount()` to `builtin_tools()` in `forge/adapters/tools/__init__.py`.
 
-```bash
-# Run directly (gather → derive → compile):
-python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py gather --since 2026-02-10
-python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py compile
+The spec's `effects` and `format: "path"` annotations buy:
+
+- containment — every path arg resolves inside the workspace before `run`; escapes are blocked
+- scheduling — read-only calls run in parallel; `WRITE_PATH`/`EXEC`/`EXTERNAL` serialize
+- guarding — `EXTERNAL` makes the permission chain Ask before the tool runs
+
+## Connect an MCP server
+
+```sh
+uv tool install '.[mcp]'   # the mcp extra
 ```
 
-See the [Wiki skill](#wiki-skill) section below.
+Declare servers in `~/.agent-forge/mcp.toml` (global) or `./.agent-forge/mcp.toml`
+(project — overrides global by server name):
 
----
-
-## Documentation
-
-| If you want to… | Read |
-|---|---|
-| Install and run your first session | [docs/user/getting-started.md](docs/user/getting-started.md) |
-| Configure auth, models, thinking modes, memory | [docs/user/configuration.md](docs/user/configuration.md) |
-| Roll out agent-forge to a team | [docs/user/team-setup.md](docs/user/team-setup.md) |
-| Look up slash commands or troubleshoot | [docs/user/faq.md](docs/user/faq.md) |
-| Connect MCP servers (filesystem, GitHub, Postgres, …) | [docs/user/mcp.md](docs/user/mcp.md) |
-| Understand the architecture or modify the codebase | [AGENTS.md](AGENTS.md) |
-
-The agent has six built-in tools — `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Find` — sandboxed to the working directory. Optional **Model Context Protocol** support lets you plug in any number of external tool servers (`pip install agent-forge[mcp]`; see [docs/user/mcp.md](docs/user/mcp.md)).
-
----
-
-## Wiki skill
-
-A per-repo knowledge system that compounds over time. It gathers signal from
-your codebase (commits, PRs, hotspots, code markers, hand-written notes),
-optionally synthesises it via an LLM, and surfaces it to agents on demand.
-
-**The wiki is no longer part of agent-forge proper.** It now ships as a
-self-contained skill at `.claude/skills/agent-forge-wiki/`, discoverable by
-Claude Code agents (and any other skill-aware host) via SKILL.md frontmatter.
-This repo includes the skill in-tree; other repos can copy the directory.
-
-State lives under `.agent-forge/` in the target repo (gitignore it).
-
-### Minimum viable usage
-
-```bash
-cd ~/your-repo
-
-# First-time area detection (writes .agent-forge/contexts.yaml)
-python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py init
-
-# Pull repo signal into .agent-forge/raw/
-python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py gather --since 2026-02-10
-
-# Synthesise narrative cards (LLM call; writes .agent-forge/curated/*.md)
-python .claude/skills/agent-forge-wiki/scripts/wiki/gather/cli.py compile
-
-# Open Claude Code (or any skill-aware agent); the wiki skill is auto-discovered.
-agent-forge
+```toml
+[servers.fs]
+command = "mcp-server-filesystem"
+args    = ["/home/me/projects"]      # optional
+env     = { GITHUB_TOKEN = "..." }   # optional
 ```
 
-Subsequent `gather` runs are incremental (the cursor in
-`.agent-forge/raw/cache/.cursor` advances).
+Or per invocation: `forge --mcp-server 'fs=mcp-server-filesystem /tmp'` (repeatable).
+`--no-mcp` skips the TOML files. Server tools appear as `<server>__<tool>`; in the
+REPL, `/mcp` shows status and `/mcp reconnect <name>` restores one. Tools a server
+doesn't annotate are treated as `WRITE_PATH|EXEC|EXTERNAL`, so the guard Asks first.
 
-Edit `.agent-forge/contexts.yaml` freely — paths use glob syntax (`**`
-matches recursively):
+## Develop
 
-```yaml
-areas:
-  payments:
-    paths:
-      - "src/payments/**"
-      - "src/billing/**"
-  auth:
-    paths:
-      - "src/auth/**"
+```sh
+uv run pytest -q                              # full suite
+uv run lint-imports                           # the layer law (2 contracts)
+uv run python scripts/gen_concept_index.py    # regenerate docs/CONCEPTS.md after public-surface changes
 ```
 
-Without `contexts.yaml`, everything still works — hot files just appear as
-one flat list instead of grouped by area.
+The layer law is enforced, not aspirational: `kernel` imports nothing internal;
+`ports`/`policy` import only `kernel`; `drive`/`adapters` sit above; `front` wires
+it all. The kernel is pure and synchronous — asyncio lives only in `drive` and `adapters`.
 
-### Drop hand-written notes anytime
+## Pointers
 
-```bash
-echo "# Why webhooks retry 3x not 5x" > .agent-forge/raw/notes/webhook-retries.md
-```
-
-The next compile picks them up.
-
-### The six stages
-
-Each is a peer subpackage of `.claude/skills/agent-forge-wiki/scripts/wiki/`
-with a uniform shape (`__init__.py` + `runner.py`).
-
-| Stage | Trigger | LLM? | Output |
-|---|---|---|---|
-| **init** | `cli.py init` (one-time) | no | `.agent-forge/contexts.yaml` |
-| **gather** | `cli.py gather` (weekly) | no | `.agent-forge/raw/cache/*.json` |
-| **compile** | `cli.py compile` (monthly) | yes | `.agent-forge/curated/*.md` |
-| **present** | called by build_wiki_section() | no | markdown manifest string |
-| **compact** | `cli.py compact` (quarterly) | yes | rewrites `curated/*.md` |
-| **maintain** | `cli.py maintain` (weekly) | no | re-gathers stale areas |
-| **metrics** | called by record_citation/record_override | no | `.agent-forge/metrics/*.jsonl` |
-
-(*Note: the `ratchet` stage and chat-time `/wiki`, `/wrong`, `--ratchet`
-integrations were removed when the wiki was extracted. The skill is
-invoked deliberately rather than auto-firing on chat events.*)
-
-### Layout under `.agent-forge/`
-
-```
-.agent-forge/
-├── contexts.yaml         declared areas (optional but recommended)
-├── raw/
-│   ├── cursor.json       last gather timestamp (incremental marker)
-│   ├── cache/            commits, PRs, hotspots, code markers, repo files
-│   └── notes/            hand-written notes
-├── curated/              LLM-synthesised narratives (created by `compile`)
-│   ├── onboarding.md
-│   ├── hotspots.md
-│   ├── adrs.md
-│   └── per_area/<area>.md
-├── skills/               optional prompt overrides for compile/compact
-└── metrics/              citations.jsonl · overrides.jsonl · staleness.json
-```
-
-Git-ignore the whole directory unless you want to commit curated knowledge
-for your team (which is a perfectly good workflow — the markdown is
-hand-readable and reviewable).
-
-### Skill architecture reference
-
-For the skill's invocation surface and capabilities, see
-[.claude/skills/agent-forge-wiki/SKILL.md](.claude/skills/agent-forge-wiki/SKILL.md).
-The stage modules under `scripts/wiki/` are documented inline.
-
-
+- [DESIGN.md](DESIGN.md) — the architecture, decisions, and as-built notes
+- [docs/CONCEPTS.md](docs/CONCEPTS.md) — generated index of every public symbol
+- [eval/](eval/) — the benchmark harness and baselines (`forge run --json` is the contract)
+- Event logs: `~/.agent-forge/sessions/<id>.jsonl` (override root with `FORGE_SESSIONS_ROOT`)

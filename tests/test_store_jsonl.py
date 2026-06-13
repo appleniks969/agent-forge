@@ -347,3 +347,14 @@ def test_latest_sid_and_summaries_filter_by_cwd(tmp_path):
     rows = session_summaries(tmp_path, cwd="/proj/x")
     assert [r["sid"] for r in rows] == ["c", "a"]  # newest first, x only
     assert rows[0]["prompt"] == "gamma"  # first-prompt preview from the log
+
+
+def test_listing_a_missing_sessions_root_is_empty_not_an_error(tmp_path):
+    # `forge sessions` / `--continue` before any session exists must not crash.
+    from forge.adapters.jsonl_store import latest_sid, load_index, session_summaries
+
+    missing = tmp_path / "never_created"
+    assert load_index(missing) == {}
+    assert latest_sid(missing) is None
+    assert session_summaries(missing) == []
+    assert not missing.exists()  # listing didn't create it
