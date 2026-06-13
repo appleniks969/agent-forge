@@ -18,7 +18,7 @@ from forge.adapters.jsonl_store import (
 )
 from forge.kernel.events import (
     DURABLE_KINDS,
-    AssistantBlock,
+    AssistantTurn,
     ChildSpawned,
     Compacted,
     Envelope,
@@ -57,15 +57,13 @@ def durable_events() -> list[Event]:
     return [
         UserSubmitted("fix the bug"),
         TurnStarted(1),
-        AssistantBlock(TextBlock("looking at it")),
-        AssistantBlock(ThinkingBlock("hmm")),
-        AssistantBlock(CALL),
+        AssistantTurn((TextBlock("looking at it"), ThinkingBlock("hmm"), CALL), Usage(10, 5)),
         ToolDeclared(CALL),
         ToolStarted("c1"),
         ToolFinished(ToolResult("c1", "file contents", is_error=False)),
         PermissionAsked(PermissionQuestion("c1", "read", "allow read?")),
         PermissionDecided("c1", True, "user", "approved at prompt"),
-        Compacted("earlier work summarized", 0),
+        Compacted("earlier work summarized", 0, Usage(8, 4)),
         RetryScheduled(2, 1.5, "overloaded_error"),
         TurnFinished("ok", Usage(10, 5, 2, 1), 0.0123),
         ChildSpawned("child-1"),
@@ -291,12 +289,11 @@ def test_fold_of_replay_equals_fold_of_originals(tmp_path: Path) -> None:
         UserSubmitted("read x.py"),
         TurnStarted(1),
         TextDelta("rea"),  # transient: skipped by both store and fold
-        AssistantBlock(TextBlock("reading")),
-        AssistantBlock(CALL),
+        AssistantTurn((TextBlock("reading"), CALL), Usage(10, 5)),
         ToolDeclared(CALL),
         ToolStarted("c1"),
         ToolFinished(ToolResult("c1", "contents")),
-        AssistantBlock(TextBlock("done")),
+        AssistantTurn((TextBlock("done"),), Usage(20, 7)),
         TurnFinished("ok", Usage(20, 10), None),
         SessionEnded(),
     ]

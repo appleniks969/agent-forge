@@ -114,7 +114,7 @@ async def test_text_only_turn(tmp_path: Path) -> None:
     assert report.result.text == "hello"
     assert report.error is None
     durable = [e for e in events if is_durable(e)]
-    assert kinds(durable) == ["UserSubmitted", "TurnStarted", "AssistantBlock", "TurnFinished"]
+    assert kinds(durable) == ["UserSubmitted", "TurnStarted", "AssistantTurn", "TurnFinished"]
     assert not report.state.in_turn
 
 

@@ -8,7 +8,7 @@ They never run together (the old plain renderer concatenated 'thinking' +
 'answer' on one line — the 391391 bug).
 Tool calls get one-liners, and TurnFinished prints a footer with tokens plus
 cost when pricing is known (the kernel always logs cost as None — pricing is
-provider knowledge injected by wiring). AssistantBlock events are ignored:
+provider knowledge injected by wiring). AssistantTurn events are ignored:
 their text already streamed as deltas.
 
 Rich's Live region is used only on a real terminal; piped/captured output
@@ -112,7 +112,7 @@ class Renderer:
                 self._flush()
                 self._footer(env.body)
             case _:
-                pass  # AssistantBlock duplicates deltas; the rest carry no UI
+                pass  # AssistantTurn duplicates deltas; the rest carry no UI
 
     # -- streaming blocks (one block per channel run) ---------------------------
 

@@ -77,16 +77,14 @@ def test_full_turn_user_model_tools_finish() -> None:
     assert kinds(run.events) == [
         "UserSubmitted",
         "TurnStarted",
-        "AssistantBlock",  # text
-        "AssistantBlock",  # c1
-        "AssistantBlock",  # c2
+        "AssistantTurn",  # one event per model round: text + c1 + c2
         "ToolDeclared",
         "ToolDeclared",
         "ToolStarted",
         "ToolStarted",
         "ToolFinished",
         "ToolFinished",
-        "AssistantBlock",  # final text
+        "AssistantTurn",  # final round: text
         "TurnFinished",
     ]
     assert run.finishes == [TurnResult("ok", "done")]
@@ -174,8 +172,7 @@ def test_deny_synthesizes_error_result_at_judge_time() -> None:
     s2 = step(s1.state, ModelResponded(out, s1.effects[0].request), policy)
 
     assert kinds(s2.events) == [
-        "AssistantBlock",
-        "AssistantBlock",
+        "AssistantTurn",
         "ToolDeclared",
         "ToolDeclared",
         "PermissionDecided",
@@ -318,7 +315,9 @@ def test_compaction_transition() -> None:
 
     assert kinds(s4.events) == ["Compacted"]
     compacted = s4.events[0]
-    assert compacted == Compacted(summary="summary of history", first_kept_seq=0)
+    assert compacted == Compacted(
+        summary="summary of history", first_kept_seq=0, usage=Usage(5, 3)
+    )
     assert s4.state.summary == "summary of history"
     assert s4.state.messages == ()  # the old window is replaced by the summary
     # compaction usage still counts
@@ -328,7 +327,7 @@ def test_compaction_transition() -> None:
     assert isinstance(nxt, CallModel) and nxt.purpose == "turn"
 
     s5 = step(s4.state, ModelResponded(mk_out(TextBlock("done")), nxt.request), policy)
-    assert kinds(s5.events) == ["AssistantBlock", "TurnFinished"]
+    assert kinds(s5.events) == ["AssistantTurn", "TurnFinished"]
     assert s5.effects == (Finish(TurnResult("ok", "done")),)
 
 

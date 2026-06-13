@@ -22,7 +22,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from forge.kernel.state import SessionState, fold
-from forge.kernel.step import Cancelled, ModelResponded, ToolOutcome, UserInput, step
+from forge.kernel.step import (
+    Cancelled,
+    ModelResponded,
+    PermissionAnswer,
+    ToolOutcome,
+    UserInput,
+    step,
+)
 from forge.kernel.types import TextBlock, ToolCall, ToolResult, Usage
 
 
@@ -103,6 +110,81 @@ def test_fold_reproduces_cancelled_turn() -> None:
     assert folded == s5.state
     assert folded.finished
     assert_matched_pairs(folded)
+
+
+def _fold_events(state: SessionState, events) -> SessionState:
+    from functools import reduce
+
+    from forge.kernel.state import apply_event
+
+    return reduce(apply_event, events, state)
+
+
+def assert_by_construction(state: SessionState, inp, policy) -> "object":
+    """THE Tier-1 invariant: a step's returned state equals the fold of the
+    events it emitted. When this holds for every transition, fold == live is
+    true by construction — not merely at turn boundaries."""
+    r = step(state, inp, policy)
+    assert _fold_events(state, r.events) == r.state
+    return r
+
+
+@pytest.mark.parametrize("name", sorted(SCENARIOS))
+def test_step_state_is_fold_of_events_at_every_step(name: str) -> None:
+    # Drive each scenario asserting the by-construction invariant on EVERY step,
+    # not just at turn boundaries.
+    spec = SCENARIOS[name]
+    policy = spec["policy"]()
+    outputs = deque(spec["outputs"]())
+    script = Script(outputs=outputs, answers=dict(spec.get("answers", {})))
+    state = SessionState()
+    for text in spec.get("user_texts", ("do the thing",)):
+        pending = deque([UserInput(text)])
+        while pending:
+            inp = pending.popleft()
+            r = assert_by_construction(state, inp, policy)
+            state = r.state
+            for eff in r.effects:
+                pending.extend(_feed(eff, script))
+
+
+def _feed(eff, script):
+    from forge.kernel.step import AskUser, CallModel, Finish, RunTools
+
+    if isinstance(eff, CallModel):
+        return [ModelResponded(output=script.outputs.popleft(), request=eff.request)]
+    if isinstance(eff, RunTools):
+        return [ToolOutcome(result=script.result_for(c)) for c in eff.calls]
+    if isinstance(eff, AskUser):
+        return [PermissionAnswer(eff.question.call_id, script.answers.get(eff.question.call_id, True))]
+    assert isinstance(eff, Finish)
+    return []
+
+
+def test_empty_model_output_holds_by_construction() -> None:
+    # K1, the confirmed counterexample: an empty model output. Previously step
+    # appended a phantom AssistantMessage + round that emitted no event, so fold
+    # could not reproduce it. Now the round carries no message and fold == live.
+    from forge.kernel.types import AssistantMessage
+
+    policy = SimPolicy()
+    s1 = step(SessionState(), UserInput("go"), policy)
+    s2 = assert_by_construction(
+        s1.state, ModelResponded(mk_out(), s1.effects[0].request), policy
+    )
+    assert fold(to_envelopes(s1.events + s2.events)) == s2.state
+    assert not any(isinstance(m, AssistantMessage) for m in s2.state.messages)
+    assert s2.state.round == 1  # the round still counts (max-turns safety)
+
+
+def test_duplicate_tool_ids_hold_by_construction() -> None:
+    # K6: a malformed output declaring two calls with the same id. The kernel
+    # may handle the batch imperfectly, but fold == live must still hold.
+    policy = SimPolicy()
+    s1 = step(SessionState(), UserInput("go"), policy)
+    dup = mk_out(ToolCall("x", "read", {}), ToolCall("x", "grep", {}))
+    s2 = assert_by_construction(s1.state, ModelResponded(dup, s1.effects[0].request), policy)
+    assert fold(to_envelopes(s1.events + s2.events)) == s2.state
 
 
 def test_fold_skips_transient_envelopes() -> None:

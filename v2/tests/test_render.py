@@ -93,9 +93,11 @@ def test_footer_reports_outcome_and_tokens():
 
 
 def test_assistant_block_is_not_double_rendered():
-    # AssistantBlock carries the same text already streamed as a delta; it must
+    # AssistantTurn carries the same text already streamed as a delta; it must
     # not re-render (the renderer ignores it).
-    from forge.kernel.events import AssistantBlock
+    from forge.kernel.events import AssistantTurn
 
-    text = _drive([TextDelta("answer"), AssistantBlock(block=TextBlock(text="answer"))])
+    text = _drive(
+        [TextDelta("answer"), AssistantTurn(blocks=(TextBlock(text="answer"),), usage=Usage())]
+    )
     assert text.count("answer") == 1

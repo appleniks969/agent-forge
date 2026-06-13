@@ -39,8 +39,13 @@ class TurnStarted:
 
 
 @dataclass(frozen=True)
-class AssistantBlock:
-    block: Block
+class AssistantTurn:
+    """One model round: all of the round's blocks plus its usage. Carrying the
+    whole round in one event (not block-by-block) lets fold be a plain reduce
+    with no buffering, and makes usage event-driven so fold == live exactly."""
+
+    blocks: tuple[Block, ...]
+    usage: Usage
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,7 @@ class Compacted:
     # pre-compaction message survives; the live window is summary + later events.
     summary: str
     first_kept_seq: int
+    usage: Usage  # the compaction call's usage — accumulated like a model round
 
 
 @dataclass(frozen=True)
@@ -125,7 +131,7 @@ class ToolOutputChunk:
 DurableEvent = (
     UserSubmitted
     | TurnStarted
-    | AssistantBlock
+    | AssistantTurn
     | ToolDeclared
     | ToolStarted
     | ToolFinished
@@ -216,11 +222,13 @@ _CODECS: tuple[_Codec, ...] = (
     _flat(UserSubmitted),
     _flat(TurnStarted),
     _Codec(
-        "AssistantBlock",
+        "AssistantTurn",
         1,
-        AssistantBlock,
-        lambda e: {"block": _enc_block(e.block)},
-        lambda d: AssistantBlock(_dec_block(d["block"])),
+        AssistantTurn,
+        lambda e: {"blocks": [_enc_block(b) for b in e.blocks], "usage": asdict(e.usage)},
+        lambda d: AssistantTurn(
+            tuple(_dec_block(b) for b in d["blocks"]), _dec_usage(d["usage"])
+        ),
     ),
     _Codec(
         "ToolDeclared",
@@ -245,7 +253,15 @@ _CODECS: tuple[_Codec, ...] = (
         lambda d: PermissionAsked(PermissionQuestion(**d["question"])),
     ),
     _flat(PermissionDecided),
-    _flat(Compacted),
+    _Codec(
+        "Compacted",
+        1,
+        Compacted,
+        lambda e: {"summary": e.summary, "first_kept_seq": e.first_kept_seq, "usage": asdict(e.usage)},
+        lambda d: Compacted(
+            summary=d["summary"], first_kept_seq=d["first_kept_seq"], usage=_dec_usage(d["usage"])
+        ),
+    ),
     _flat(RetryScheduled),
     _Codec(
         "TurnFinished",

@@ -16,9 +16,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from forge.kernel.events import (
-    AssistantBlock,
+    AssistantTurn,
     Compacted,
     Envelope,
+    Event,
     PermissionAsked,
     PermissionDecided,
     SessionEnded,
@@ -30,7 +31,6 @@ from forge.kernel.events import (
 )
 from forge.kernel.types import (
     AssistantMessage,
-    Block,
     Message,
     PermissionQuestion,
     ToolCall,
@@ -98,66 +98,67 @@ def apply_compaction(state: SessionState, summary: str) -> SessionState:
     return replace(state, messages=(), summary=summary)
 
 
-def append_assistant(state: SessionState, blocks: tuple[Block, ...]) -> SessionState:
-    return replace(
-        state,
-        messages=state.messages + (AssistantMessage(blocks),),
-        round=state.round + 1,
-    )
+# --- the single reducer -------------------------------------------------------
+
+
+def apply_event(state: SessionState, event: Event) -> SessionState:
+    """The ONE state transition. step() derives its next state by applying the
+    events it emits through this function, and fold() applies the logged events
+    through it — so fold == live is true by construction, not by test. Every
+    state field changes here and nowhere else.
+
+    Usage accumulates per model round (AssistantTurn / Compacted), so totals are
+    exact at every point — not just at turn boundaries; TurnFinished only flips
+    in_turn (it carries usage purely for the run record / footer)."""
+    match event:
+        case UserSubmitted(text):
+            return replace(state, messages=state.messages + (UserMessage(text),))
+        case TurnStarted(turn):
+            return replace(state, turn=turn, round=0, turn_usage=Usage(), in_turn=True)
+        case AssistantTurn(blocks, usage):
+            # A round always counts (max-turns safety); an empty round adds no
+            # message — no phantom AssistantMessage, the K1 fold/live divergence.
+            msgs = state.messages + ((AssistantMessage(blocks),) if blocks else ())
+            return replace(
+                state,
+                messages=msgs,
+                round=state.round + 1,
+                usage=state.usage + usage,
+                turn_usage=state.turn_usage + usage,
+            )
+        case ToolDeclared(call):
+            return replace(state, declared=state.declared + (call,))
+        case ToolFinished(result):
+            s = add_result(state, result)
+            return flush_batch(s) if batch_complete(s) else s
+        case PermissionAsked(question):
+            return replace(
+                state, pending_permissions=state.pending_permissions + (question,)
+            )
+        case PermissionDecided():
+            return remove_permission(state, event.call_id)
+        case Compacted():
+            s = apply_compaction(state, event.summary)
+            return replace(
+                s, usage=s.usage + event.usage, turn_usage=s.turn_usage + event.usage
+            )
+        case TurnFinished():
+            return replace(state, in_turn=False)
+        case SessionEnded():
+            return replace(state, finished=True)
+        case _:
+            return state  # ToolStarted, RetryScheduled, ChildSpawned: no state
 
 
 # --- fold ---------------------------------------------------------------------
 
 
 def fold(envelopes: Iterable[Envelope]) -> SessionState:
-    """Reduce durable envelopes to SessionState; transient envelopes are skipped."""
+    """Reduce durable envelopes to SessionState; transient envelopes are skipped.
+
+    A plain left fold over apply_event — the same function step() uses."""
     state = SessionState()
-    # AssistantBlock events for one model output arrive as a consecutive run;
-    # buffer them and flush as one AssistantMessage when the run ends.
-    buf: list[Block] = []
     for env in envelopes:
-        if not env.durable:
-            continue
-        state, buf = _apply(state, env.body, buf)
-    if buf:
-        state = append_assistant(state, tuple(buf))
+        if env.durable:
+            state = apply_event(state, env.body)
     return state
-
-
-def _apply(state: SessionState, event: object, buf: list[Block]) -> tuple[SessionState, list[Block]]:
-    if isinstance(event, AssistantBlock):
-        return state, buf + [event.block]
-    if buf:
-        state = append_assistant(state, tuple(buf))
-        buf = []
-    match event:
-        case UserSubmitted(text):
-            state = replace(state, messages=state.messages + (UserMessage(text),))
-        case TurnStarted(turn):
-            state = replace(state, turn=turn, round=0, turn_usage=Usage(), in_turn=True)
-        case ToolDeclared(call):
-            state = replace(state, declared=state.declared + (call,))
-        case ToolFinished(result):
-            state = add_result(state, result)
-            if batch_complete(state):
-                state = flush_batch(state)
-        case PermissionAsked(question):
-            state = replace(
-                state, pending_permissions=state.pending_permissions + (question,)
-            )
-        case PermissionDecided():
-            state = remove_permission(state, event.call_id)
-        case Compacted():
-            state = apply_compaction(state, event.summary)
-        case TurnFinished():
-            state = replace(
-                state,
-                usage=state.usage + event.usage,
-                turn_usage=event.usage,
-                in_turn=False,
-            )
-        case SessionEnded():
-            state = replace(state, finished=True)
-        case _:
-            pass  # ToolStarted, RetryScheduled, ChildSpawned carry no state
-    return state, buf

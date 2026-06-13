@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from forge.kernel.events import (
-    AssistantBlock,
+    AssistantTurn,
     Compacted,
     Event,
     PermissionAsked,
@@ -27,15 +27,7 @@ from forge.kernel.events import (
     TurnStarted,
     UserSubmitted,
 )
-from forge.kernel.state import (
-    SessionState,
-    add_result,
-    append_assistant,
-    apply_compaction,
-    batch_complete,
-    flush_batch,
-    remove_permission,
-)
+from forge.kernel.state import SessionState, apply_event
 from forge.kernel.types import (
     Allow,
     Ask,
@@ -49,8 +41,6 @@ from forge.kernel.types import (
     ToolCall,
     ToolResult,
     TurnResult,
-    Usage,
-    UserMessage,
     Verdict,
 )
 
@@ -148,6 +138,25 @@ class Policy(Protocol):
 # --- the transition ---------------------------------------------------------------
 
 
+class _Build:
+    """Threads state and events together: every emitted event is applied to the
+    running state via apply_event — the SAME reducer fold uses. So a step's
+    returned state is, by construction, the fold of the events it emits."""
+
+    __slots__ = ("state", "events")
+
+    def __init__(self, state: SessionState) -> None:
+        self.state = state
+        self.events: list[Event] = []
+
+    def emit(self, event: Event) -> None:
+        self.events.append(event)
+        self.state = apply_event(self.state, event)
+
+    def done(self, effects: tuple[Effect, ...] = ()) -> Step:
+        return Step(self.state, effects, tuple(self.events))
+
+
 def step(state: SessionState, inp: Input, policy: Policy) -> Step:
     if state.finished:
         return Step(state, (), ())
@@ -168,46 +177,30 @@ def step(state: SessionState, inp: Input, policy: Policy) -> Step:
 def _on_user(state: SessionState, inp: UserInput, policy: Policy) -> Step:
     if state.in_turn:
         return Step(state, (), ())  # mid-turn input is a driver bug; ignore purely
-    new = replace(
-        state,
-        messages=state.messages + (UserMessage(inp.text),),
-        turn=state.turn + 1,
-        round=0,
-        turn_usage=Usage(),
-        in_turn=True,
-    )
-    events: tuple[Event, ...] = (UserSubmitted(inp.text), TurnStarted(new.turn))
-    new, effects, more = _continue_turn(new, policy, allow_compaction=True)
-    return Step(new, effects, events + more)
+    b = _Build(state)
+    b.emit(UserSubmitted(inp.text))
+    b.emit(TurnStarted(state.turn + 1))
+    return _continue(b, policy, allow_compaction=True)
 
 
 def _on_model(state: SessionState, inp: ModelResponded, policy: Policy) -> Step:
     if not state.in_turn:
         return Step(state, (), ())
-    usage = inp.output.usage
-    new = replace(state, usage=state.usage + usage, turn_usage=state.turn_usage + usage)
-
+    b = _Build(state)
     if inp.request.purpose == "compaction":
-        summary = inp.output.text
-        new = apply_compaction(new, summary)
-        events: tuple[Event, ...] = (Compacted(summary=summary, first_kept_seq=0),)
-        # No re-check of should_compact: one compaction per pressure crossing.
-        new, effects, more = _continue_turn(new, policy, allow_compaction=False)
-        return Step(new, effects, events + more)
+        b.emit(Compacted(summary=inp.output.text, first_kept_seq=0, usage=inp.output.usage))
+        # One compaction per pressure crossing: don't re-offer it this round.
+        return _continue(b, policy, allow_compaction=False)
 
-    blocks = inp.output.blocks
-    new = append_assistant(new, blocks)
-    events = tuple(AssistantBlock(b) for b in blocks)
-
+    b.emit(AssistantTurn(inp.output.blocks, inp.output.usage))
     calls = inp.output.tool_calls
     if not calls:
-        new, effects, more = _finish_turn(new, "ok", text=inp.output.text)
-        return Step(new, effects, events + more)
+        return _finish(b, "ok", text=inp.output.text)
 
-    # Declare the whole batch first so fold's completeness check (results ==
-    # declared) cannot fire before every call is on the books.
-    new = replace(new, declared=calls, results=())
-    events += tuple(ToolDeclared(c) for c in calls)
+    # Declare the whole batch before any verdict, so the completeness check
+    # (results == declared) cannot fire before every call is on the books.
+    for call in calls:
+        b.emit(ToolDeclared(call))
 
     spec_effects = {t.name: t.effects for t in inp.request.tools}
     to_run: list[ToolCall] = []
@@ -217,45 +210,40 @@ def _on_model(state: SessionState, inp: ModelResponded, policy: Policy) -> Step:
         match verdict:
             case Allow():
                 to_run.append(call)
-                events += (ToolStarted(call.id),)
+                b.emit(ToolStarted(call.id))
             case Deny(reason):
-                result = ToolResult(call.id, f"permission denied: {reason}", is_error=True)
-                events += (
-                    PermissionDecided(call.id, allowed=False, source="policy", reason=reason),
-                    ToolFinished(result),
+                b.emit(
+                    PermissionDecided(call.id, allowed=False, source="policy", reason=reason)
                 )
-                new = add_result(new, result)
+                b.emit(
+                    ToolFinished(
+                        ToolResult(call.id, f"permission denied: {reason}", is_error=True)
+                    )
+                )
             case Ask(question):
                 if question.call_id != call.id:
                     question = replace(question, call_id=call.id)
-                events += (PermissionAsked(question),)
-                new = replace(
-                    new, pending_permissions=new.pending_permissions + (question,)
-                )
+                b.emit(PermissionAsked(question))
                 asks.append(AskUser(question))
 
-    effects = tuple(asks)
+    effects: tuple[Effect, ...] = tuple(asks)
     if to_run:
         effects += (RunTools(tuple(to_run)),)
-    if batch_complete(new):  # every call denied at judge time
-        new = flush_batch(new)
-        new, more_eff, more_ev = _continue_turn(new, policy, allow_compaction=True)
-        return Step(new, effects + more_eff, events + more_ev)
-    return Step(new, effects, events)
+    if not b.state.declared:  # every call denied -> apply_event flushed the batch
+        return _continue(b, policy, effects=effects, allow_compaction=True)
+    return b.done(effects)
 
 
 def _on_outcome(state: SessionState, inp: ToolOutcome, policy: Policy) -> Step:
     pending_ids = {c.id for c in state.pending_calls}
     if not state.in_turn or inp.result.call_id not in pending_ids:
         return Step(state, (), ())
-    result = _truncate(inp.result, policy.result_cap_bytes)
-    new = add_result(state, result)
-    events: tuple[Event, ...] = (ToolFinished(result),)
-    if batch_complete(new):
-        new = flush_batch(new)
-        new, effects, more = _continue_turn(new, policy, allow_compaction=True)
-        return Step(new, effects, events + more)
-    return Step(new, (), events)
+    b = _Build(state)
+    had_batch = bool(state.declared)
+    b.emit(ToolFinished(_truncate(inp.result, policy.result_cap_bytes)))
+    if had_batch and not b.state.declared:  # batch completed and flushed
+        return _continue(b, policy, allow_compaction=True)
+    return b.done()
 
 
 def _on_answer(state: SessionState, inp: PermissionAnswer, policy: Policy) -> Step:
@@ -264,69 +252,60 @@ def _on_answer(state: SessionState, inp: PermissionAnswer, policy: Policy) -> St
     )
     if not state.in_turn or question is None:
         return Step(state, (), ())
-    new = remove_permission(state, inp.call_id)
-    events: tuple[Event, ...] = (
-        PermissionDecided(inp.call_id, allowed=inp.allow, source="user", reason=""),
-    )
+    b = _Build(state)
+    b.emit(PermissionDecided(inp.call_id, allowed=inp.allow, source="user", reason=""))
     if inp.allow:
-        call = next(c for c in new.declared if c.id == inp.call_id)
-        events += (ToolStarted(call.id),)
-        return Step(new, (RunTools((call,)),), events)
-    result = ToolResult(inp.call_id, "permission denied by user", is_error=True)
-    events += (ToolFinished(result),)
-    new = add_result(new, result)
-    if batch_complete(new):
-        new = flush_batch(new)
-        new, effects, more = _continue_turn(new, policy, allow_compaction=True)
-        return Step(new, effects, events + more)
-    return Step(new, (), events)
+        call = next((c for c in b.state.declared if c.id == inp.call_id), None)
+        if call is None:  # the call already left the batch — nothing to run
+            return b.done()
+        b.emit(ToolStarted(call.id))
+        return b.done((RunTools((call,)),))
+    had_batch = bool(state.declared)
+    b.emit(ToolFinished(ToolResult(inp.call_id, "permission denied by user", is_error=True)))
+    if had_batch and not b.state.declared:
+        return _continue(b, policy, allow_compaction=True)
+    return b.done()
 
 
 def _on_cancel(state: SessionState) -> Step:
+    b = _Build(state)
     if not state.in_turn:
-        return Step(replace(state, finished=True), (), (SessionEnded(),))
-    events: tuple[Event, ...] = ()
-    new = state
-    for question in new.pending_permissions:
-        events += (
+        b.emit(SessionEnded())
+        return b.done()
+    for question in state.pending_permissions:
+        b.emit(
             PermissionDecided(
                 question.call_id, allowed=False, source="policy", reason="cancelled"
-            ),
+            )
         )
-    new = replace(new, pending_permissions=())
-    for call in new.pending_calls:
-        placeholder = ToolResult(call.id, CANCELLED_CONTENT, is_error=True)
-        events += (ToolFinished(placeholder),)
-        new = add_result(new, placeholder)
-    if batch_complete(new):
-        new = flush_batch(new)
-    new, effects, more = _finish_turn(new, "aborted")
-    return Step(new, effects, events + more)
+    for call in state.pending_calls:
+        b.emit(ToolFinished(ToolResult(call.id, CANCELLED_CONTENT, is_error=True)))
+    return _finish(b, "aborted")
 
 
 # --- shared turn continuation -------------------------------------------------
 
 
-def _continue_turn(
-    state: SessionState, policy: Policy, *, allow_compaction: bool
-) -> tuple[SessionState, tuple[Effect, ...], tuple[Event, ...]]:
-    if state.round >= policy.max_turns:
-        return _finish_turn(state, "max_turns")
-    if allow_compaction and policy.should_compact(state):
-        request = policy.build_request(state, "compaction")
-        return state, (CallModel(request, "compaction"),), ()
-    request = policy.build_request(state, "turn")
-    return state, (CallModel(request, "turn"),), ()
+def _continue(
+    b: _Build, policy: Policy, *, effects: tuple[Effect, ...] = (), allow_compaction: bool
+) -> Step:
+    if b.state.round >= policy.max_turns:
+        return _finish(b, "max_turns", effects=effects)
+    purpose: Purpose = (
+        "compaction" if allow_compaction and policy.should_compact(b.state) else "turn"
+    )
+    request = policy.build_request(b.state, purpose)
+    return b.done(effects + (CallModel(request, purpose),))
 
 
-def _finish_turn(
-    state: SessionState, outcome: Outcome, text: str = ""
-) -> tuple[SessionState, tuple[Effect, ...], tuple[Event, ...]]:
+def _finish(
+    b: _Build, outcome: Outcome, *, text: str = "", effects: tuple[Effect, ...] = ()
+) -> Step:
     # Cost is None from the kernel: pricing is provider knowledge (ModelInfo);
-    # external consumers derive cost from the logged usage.
-    events: tuple[Event, ...] = (TurnFinished(outcome, state.turn_usage, None),)
-    new = replace(state, in_turn=False)
-    return new, (Finish(TurnResult(outcome, text)),), events
+    # external consumers derive cost from the logged usage. TurnFinished carries
+    # the turn's usage for the run record; apply_event only flips in_turn.
+    b.emit(TurnFinished(outcome, b.state.turn_usage, None))
+    return b.done(effects + (Finish(TurnResult(outcome, text)),))
 
 
 def _truncate(result: ToolResult, cap_bytes: int) -> ToolResult:

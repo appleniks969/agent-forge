@@ -9,7 +9,7 @@ import pytest
 from forge.kernel.events import (
     DURABLE_KINDS,
     TRANSIENT_KINDS,
-    AssistantBlock,
+    AssistantTurn,
     ChildSpawned,
     Compacted,
     Envelope,
@@ -45,9 +45,8 @@ CALL = ToolCall("c1", "read", {"path": "src/a.py", "limit": 40, "nested": {"k": 
 DURABLE_SAMPLES = [
     UserSubmitted("fix the bug"),
     TurnStarted(3),
-    AssistantBlock(TextBlock("hello")),
-    AssistantBlock(ThinkingBlock("hmm")),
-    AssistantBlock(CALL),
+    AssistantTurn((TextBlock("hello"), ThinkingBlock("hmm"), CALL), Usage(100, 50)),
+    AssistantTurn((), Usage()),  # empty round (no blocks) still round-trips
     ToolDeclared(CALL),
     ToolStarted("c1"),
     ToolFinished(ToolResult("c1", "file contents", is_error=False)),
@@ -55,7 +54,7 @@ DURABLE_SAMPLES = [
     PermissionAsked(PermissionQuestion("c1", "bash", "run `rm -rf build`?")),
     PermissionDecided("c1", allowed=True, source="user", reason=""),
     PermissionDecided("c2", allowed=False, source="policy", reason="outside workspace"),
-    Compacted(summary="we did things", first_kept_seq=0),
+    Compacted(summary="we did things", first_kept_seq=0, usage=Usage(80, 12)),
     RetryScheduled(attempt=2, delay_s=1.5, reason="overloaded"),
     TurnFinished(outcome="ok", usage=Usage(100, 50, 7, 3), cost=0.0123),
     TurnFinished(outcome="aborted", usage=Usage(), cost=None),

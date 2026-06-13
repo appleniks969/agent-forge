@@ -14,9 +14,9 @@ One line per public symbol, grouped by layer in dependency order.
 ### `forge.kernel` — kernel: pure, synchronous, stdlib-only — zero internal deps.
 
 ### `forge.kernel.events` — The Event union, Envelope, and JSON serde.
-- `@dataclass AssistantBlock(block: Block)`
+- `@dataclass AssistantTurn(blocks: tuple[Block, ...], usage: Usage)` — One model round: all of the round's blocks plus its usage. Carrying the
 - `@dataclass ChildSpawned(child_sid: str)`
-- `@dataclass Compacted(summary: str, first_kept_seq: int)`
+- `@dataclass Compacted(summary: str, first_kept_seq: int, usage: Usage)`
 - `@dataclass Envelope(seq: int, sid: str, parent: str | None, ts: float, v: int, durable: bool, body: Event)`
 - `@dataclass PermissionAsked(question: PermissionQuestion)`
 - `@dataclass PermissionDecided(call_id: str, allowed: bool, source: DecisionSource, reason: str)`
@@ -42,8 +42,8 @@ One line per public symbol, grouped by layer in dependency order.
 ### `forge.kernel.state` — SessionState and fold(envelopes) -> SessionState.
 - `@dataclass SessionState(messages: tuple[Message, ...] = (), declared: tuple[ToolCall, ...] = (), results: tuple[ToolResult, ...] = (), pending_permissions: tuple[PermissionQuestion, ...] = (), turn: int = 0, round: int = 0, usage: Usage = Usage(), turn_usage: Usage = Usage(), summary: str | None = None, in_turn: bool = False, finished: bool = False)` (methods: pending_calls, pending_permission)
 - `add_result(state: SessionState, result: ToolResult) -> SessionState`
-- `append_assistant(state: SessionState, blocks: tuple[Block, ...]) -> SessionState`
 - `apply_compaction(state: SessionState, summary: str) -> SessionState` — The old window is replaced by the summary; nothing pre-compaction survives.
+- `apply_event(state: SessionState, event: Event) -> SessionState` — The ONE state transition. step() derives its next state by applying the
 - `batch_complete(state: SessionState) -> bool`
 - `flush_batch(state: SessionState) -> SessionState` — Append one ToolResultMessage in declaration order; clear the batch.
 - `fold(envelopes: Iterable[Envelope]) -> SessionState` — Reduce durable envelopes to SessionState; transient envelopes are skipped.
