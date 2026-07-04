@@ -229,10 +229,19 @@ async def connect_mcp(settings: Settings) -> MCPManager | None:
 
 
 def _environment_facts(ws_root: Path) -> Mapping[str, str]:
-    return {
+    facts = {
         "working directory": str(ws_root),
         "platform": platform_mod.platform(terse=True),
     }
+    # Saves the turn-1 ls: an empty workspace means write files directly.
+    # Only the empty case is stated — listing contents belongs to the repo
+    # map, and a stale "non-empty" claim would be worse than silence.
+    try:
+        if not any(ws_root.iterdir()):
+            facts["directory contents"] = "(empty)"
+    except OSError:
+        pass
+    return facts
 
 
 def build_session(

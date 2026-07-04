@@ -28,7 +28,8 @@ class BashTool:
         name="Bash",
         description=(
             "Execute a shell command in the workspace root. Use for running "
-            "tests, builds, git operations, or any shell task. Avoid "
+            "tests, builds, git operations, or any shell task. Chain "
+            "dependent setup-then-run steps with && in a single call. Avoid "
             "interactive commands. Default timeout: 120s."
         ),
         params={
