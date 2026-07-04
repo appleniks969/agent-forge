@@ -31,6 +31,7 @@ from forge.kernel.state import SessionState, apply_event
 from forge.kernel.types import (
     Allow,
     Ask,
+    Block,
     Deny,
     Effects,
     ModelOutput,
@@ -192,8 +193,13 @@ def _on_model(state: SessionState, inp: ModelResponded, policy: Policy) -> Step:
         # One compaction per pressure crossing: don't re-offer it this round.
         return _continue(b, policy, allow_compaction=False)
 
-    b.emit(AssistantTurn(inp.output.blocks, inp.output.usage))
-    calls = inp.output.tool_calls
+    # Duplicate tool-call ids (unvalidated provider passthrough) would wedge
+    # the turn forever: pending_calls dedupes by id while batch_complete
+    # counts results, so declared=2/results=1 never completes. Dedupe blocks
+    # BEFORE any event is emitted so fold and live replay identically.
+    blocks = _dedupe_call_ids(inp.output.blocks)
+    b.emit(AssistantTurn(blocks, inp.output.usage))
+    calls = tuple(blk for blk in blocks if isinstance(blk, ToolCall))
     if not calls:
         return _finish(b, "ok", text=inp.output.text)
 
@@ -306,6 +312,20 @@ def _finish(
     # the turn's usage for the run record; apply_event only flips in_turn.
     b.emit(TurnFinished(outcome, b.state.turn_usage, None))
     return b.done(effects + (Finish(TurnResult(outcome, text)),))
+
+
+def _dedupe_call_ids(blocks: tuple[Block, ...]) -> tuple[Block, ...]:
+    """Keep the first tool call per id; drop exact-id duplicates. Non-call
+    blocks pass through untouched."""
+    seen: set[str] = set()
+    out: list[Block] = []
+    for blk in blocks:
+        if isinstance(blk, ToolCall):
+            if blk.id in seen:
+                continue
+            seen.add(blk.id)
+        out.append(blk)
+    return tuple(out)
 
 
 def _truncate(result: ToolResult, cap_bytes: int) -> ToolResult:

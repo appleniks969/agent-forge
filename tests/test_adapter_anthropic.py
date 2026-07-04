@@ -514,6 +514,30 @@ async def test_unexpected_error_is_fatal_not_raw() -> None:
         await provider.complete(make_req())
 
 
+def mid_stream_error(error_type: str) -> anthropic.APIStatusError:
+    # Mid-stream SSE errors surface with the stream's HTTP-200 response and
+    # the real error type only in the body.
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return anthropic.APIStatusError(
+        error_type,
+        response=httpx.Response(200, request=request),
+        body={"type": "error", "error": {"type": error_type, "message": error_type}},
+    )
+
+
+@pytest.mark.parametrize("error_type", ["overloaded_error", "api_error", "rate_limit_error"])
+async def test_mid_stream_transient_body_types_are_transient(error_type: str) -> None:
+    provider, _ = make_provider(error=mid_stream_error(error_type))
+    with pytest.raises(TransientProviderError):
+        await provider.complete(make_req())
+
+
+async def test_mid_stream_nontransient_body_type_is_fatal() -> None:
+    provider, _ = make_provider(error=mid_stream_error("invalid_request_error"))
+    with pytest.raises(FatalProviderError):
+        await provider.complete(make_req())
+
+
 async def test_no_internal_retry() -> None:
     provider, client = make_provider(error=status_error(429))
     with pytest.raises(TransientProviderError):

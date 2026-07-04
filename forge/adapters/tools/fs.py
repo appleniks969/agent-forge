@@ -279,12 +279,37 @@ class EditTool:
         if ctx.cancel.is_set():  # do not mutate after the user aborted
             return _err("aborted")
 
+        # Phase 2: apply against the WORKING text, re-validating each
+        # old_string right before its replacement — partially overlapping
+        # edits (one old_string consumed or manufactured by another) passed
+        # phase 1.5's equality/containment check but would silently no-op or
+        # hit the wrong occurrence here. All-or-nothing: any apply-time
+        # failure aborts before the file is touched.
         working = original
         notes: list[str] = []
-        for old, new, replace_all in edits:
-            n = working.count(old) if replace_all else 1
+        for idx, (old, new, replace_all) in enumerate(edits):
+            label = f" (edit {idx + 1}/{len(edits)})" if len(edits) > 1 else ""
+            n = working.count(old)
+            if not replace_all:
+                # Single mode promises exactly-once; a count drifted by an
+                # earlier edit must error, never silently no-op or replace
+                # the wrong occurrence. replace_all is vacuously satisfied
+                # by zero matches (the documented identical-pair idempotent
+                # case), and its note reports the true count.
+                if n == 0:
+                    return _err(
+                        f"old_string no longer present at apply time{label} — "
+                        "an earlier edit in the batch consumed it; split into "
+                        "separate calls"
+                    )
+                if n > 1:
+                    return _err(
+                        f"old_string matches {n} times at apply time{label} — "
+                        "an earlier edit in the batch created new occurrences; "
+                        "split into separate calls"
+                    )
             working = working.replace(old, new) if replace_all else working.replace(old, new, 1)
-            notes.append(f"Replaced {n} occurrence(s)")
+            notes.append(f"Replaced {n if replace_all else 1} occurrence(s)")
         resolved.write_text(working, encoding="utf-8")
 
         if len(edits) == 1:

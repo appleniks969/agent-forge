@@ -347,3 +347,27 @@ def test_stale_inputs_are_ignored() -> None:
     assert step(s1.state, PermissionAnswer("ghost", True), policy) == Step(
         s1.state, (), ()
     )
+
+
+def test_duplicate_tool_call_ids_deduped_not_wedged() -> None:
+    # Two ToolCalls sharing an id (unvalidated provider passthrough) used to
+    # make declared=2/results=1 forever: the turn never finished. The dupe is
+    # dropped before any event is emitted, so one result completes the batch.
+    policy = SimPolicy()
+    s1 = start_turn(policy)
+    call_model = s1.effects[0]
+    assert isinstance(call_model, CallModel)
+    dup = ToolCall("c1", "read", {"path": "b.py"})  # same id as C1
+    s2 = step(
+        s1.state,
+        ModelResponded(mk_out(TextBlock("go"), C1, dup), call_model.request),
+        policy,
+    )
+    assert kinds(s2.events) == ["AssistantTurn", "ToolDeclared", "ToolStarted"]
+    assert [c.id for c in s2.state.declared] == ["c1"]
+    # the surviving call is the FIRST occurrence
+    assert s2.state.declared[0].args == {"path": "a.py"}
+    # one result completes the batch and the turn continues
+    s3 = step(s2.state, ToolOutcome(ToolResult("c1", "alpha")), policy)
+    assert any(isinstance(e, CallModel) for e in s3.effects)
+    assert_matched_pairs(s3.state)

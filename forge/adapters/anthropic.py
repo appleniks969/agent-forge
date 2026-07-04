@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,12 +49,25 @@ OAUTH_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
 _OAUTH_BETAS = ("claude-code-20250219", "oauth-2025-04-20")
 _THINKING_BETA = "interleaved-thinking-2025-05-14"
 _RETRY_CODES = frozenset({408, 429, 500, 502, 503, 504, 529})
+# Transient error-body types: mid-stream errors carry the stream's HTTP-200
+# status, so these must be recognized by type, not status code.
+_RETRY_ERROR_TYPES = frozenset({"overloaded_error", "rate_limit_error", "api_error", "timeout_error"})
 _THINKING_BUDGETS = {Effort.LOW: 1024, Effort.MED: 4096, Effort.HIGH: 16000}
 _DEFAULT_MAX_OUTPUT = 8192
 
 
 def _is_oauth(api_key: str) -> bool:
     return "sk-ant-oat" in api_key
+
+
+def _body_error_type(exc: anthropic.APIStatusError) -> str:
+    """The error type from the response body ({'error': {'type': ...}}), or ''."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, Mapping):
+        err = body.get("error")
+        if isinstance(err, Mapping):
+            return str(err.get("type") or "")
+    return ""
 
 
 # --- surrogate sanitization --------------------------------------------------
@@ -360,7 +373,10 @@ class AnthropicProvider:
         except anthropic.APIConnectionError as exc:  # includes APITimeoutError
             raise TransientProviderError(str(exc)) from exc
         except anthropic.APIStatusError as exc:
-            if exc.status_code in _RETRY_CODES:
+            # Mid-stream SSE errors arrive with the stream's HTTP-200 status,
+            # so a textbook-transient overloaded_error would read as fatal if
+            # classified by status code alone — check the error body type too.
+            if exc.status_code in _RETRY_CODES or _body_error_type(exc) in _RETRY_ERROR_TYPES:
                 raise TransientProviderError(f"http {exc.status_code}: {exc}") from exc
             raise FatalProviderError(f"http {exc.status_code}: {exc}") from exc
         except anthropic.AnthropicError as exc:

@@ -255,3 +255,42 @@ async def test_edit_no_mode_given_is_error(ctx, edited):
     res = await EditTool().run({"path": "code.py"}, ctx)
     assert res.is_error
     assert "old_string or an edits array" in res.content
+
+
+async def test_edit_partial_overlap_consumed_at_apply_time_errors(ctx, tmp_path):
+    # "abcd" and "cdef" partially overlap in "abcdef": neither equals nor
+    # contains the other, so phase 1.5 passes — but applying the first consumes
+    # the second. Must error with the file untouched, not report success.
+    (tmp_path / "f.txt").write_text("abcdef")
+    res = await EditTool().run(
+        {
+            "path": "f.txt",
+            "edits": [
+                {"old_string": "abcd", "new_string": "x"},
+                {"old_string": "cdef", "new_string": "y"},
+            ],
+        },
+        ctx,
+    )
+    assert res.is_error
+    assert "apply time" in res.content
+    assert (tmp_path / "f.txt").read_text() == "abcdef"
+
+
+async def test_edit_manufactured_occurrence_at_apply_time_errors(ctx, tmp_path):
+    # edit1's new_string manufactures a second occurrence of edit2's
+    # old_string: unambiguous at validation, ambiguous at apply. Must error.
+    (tmp_path / "f.txt").write_text("alpha beta")
+    res = await EditTool().run(
+        {
+            "path": "f.txt",
+            "edits": [
+                {"old_string": "alpha", "new_string": "beta"},
+                {"old_string": "beta", "new_string": "gamma"},
+            ],
+        },
+        ctx,
+    )
+    assert res.is_error
+    assert "apply time" in res.content
+    assert (tmp_path / "f.txt").read_text() == "alpha beta"
