@@ -1,0 +1,217 @@
+{
+  "label": "forge quality-push 2026-07-03 — judged identity rewrite + variance hardening (levers 1-8), post v1-deletion",
+  "capturedAt": "2026-07-03",
+  "source": "automated — forge run -p --json @ working tree on 2392192+quality-push edits, uv tool reinstalled, OAuth token (CLAUDE_CODE_OAUTH_TOKEN), memory cleared, isolated /tmp/forge-eval dirs, 3 runs per complex task, compile gate bare tsc --strict --noEmit, tests via npx tsx, adversarial probes executed",
+  "model": "claude-sonnet-4-6",
+  "tool": "forge",
+  "simpleTasks": {
+    "total": {
+      "cost": 0.2426,
+      "tasks": 3,
+      "avgTurns": 6.7,
+      "tierQuality": 7,
+      "tierNotes": "Simple tier 7.0. S1 (9.5) is the tier ideal: single-turn inline Python palindrome, punctuation/case handled via isalnum+lower (historical failure fixed), honest edge docs, no files, no scope creep. S2 and S3 (6.5 each) share one defining regression: both wrote unrequested test files against explicit no-tests prompts — S3's thinking even acknowledged no tests were requested, then wrote 12 anyway. S2's queue is semantically correct (O(1) head/tail, RangeError throw paths, clean export) but adds an unrequested size getter and burned 14 turns on ESM import-extension churn caused solely by the unrequested test file. S3's debounce has correct trailing-edge semantics (timer reset, last-call args/this, async wait=0) but adds unrequested .cancel() and wait-validation API, and its sleep-based tests lack the deterministic-clock seam. No observable-semantics bugs anywhere in the tier — all deductions are restraint-pattern (unrequested tests x2, unrequested API x2, turn churn), which is why the weighted score sits at 7.0 rather than the 6.5 median."
+    },
+    "S1_palindrome": {
+      "turns": 1,
+      "cost": 0.0184,
+      "outputTokens": 418,
+      "cacheRead": 0,
+      "cacheWrite": 3235,
+      "qualityScore": 9.5,
+      "dings": [
+        "Strict-variant aside is marginally beyond the ask (very mild, prose-only)"
+      ]
+    },
+    "S2_queue": {
+      "turns": 14,
+      "cost": 0.1309,
+      "outputTokens": 3751,
+      "cacheRead": 69232,
+      "cacheWrite": 14359,
+      "qualityScore": 6.5,
+      "dings": [
+        "Unrequested test file despite prompt asking for no tests — thinking assumed 'with tests' from turn one",
+        "Unrequested `size` getter, self-labeled 'bonus' (scope creep)",
+        "14 turns burned on ESM import-extension churn, entirely self-inflicted by the unrequested test file"
+      ]
+    },
+    "S3_debounce": {
+      "turns": 5,
+      "cost": 0.0933,
+      "outputTokens": 2729,
+      "cacheRead": 8331,
+      "cacheWrite": 13290,
+      "qualityScore": 6.5,
+      "dings": [
+        "Unrequested .cancel() API — task rubric says cancel/flush only if requested",
+        "Unrequested RangeError validation of wait (extra behavior surface, documented as API)",
+        "Wrote a 12-test file after its own thinking explicitly noted no tests were requested — recognized the restraint boundary and crossed it anyway",
+        "Tests rely on real 30-60ms sleeps, not deterministic timing (the seam anchor C2 was rewarded for)",
+        "lastArgs/lastThis retained after invocation (minor reference-retention nit)"
+      ]
+    }
+  },
+  "complexTasks": {
+    "total": {
+      "avgCostPerTask": 0.1715,
+      "tasks": 3,
+      "runsPerTask": 3,
+      "avgTurns": 8.8
+    },
+    "C1_lruCache": {
+      "turns": [
+        7,
+        8,
+        9
+      ],
+      "avgTurns": 8.0,
+      "cost": [
+        0.1723,
+        0.1918,
+        0.1658
+      ],
+      "avgCost": 0.1766,
+      "outputTokens": [
+        5982,
+        7475,
+        6286
+      ],
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCounts": [
+        53,
+        14,
+        14
+      ],
+      "perRunQuality": [
+        8.5,
+        8,
+        7.5
+      ],
+      "qualityScore": 8,
+      "qualityNotes": "C1 median 8.0 (runs 8.5/8.0/7.5). All three runs: sentinel doubly-linked list, genuine O(1), correct eviction semantics on all adversarial probes (update-of-existing promotes to MRU, get promotes, capacity-1, clear+reuse) — no wrapper/juggling bugs found. Common mild scope creep: unrequested size getter (all), public readonly capacity (r1/r2); all extra surface is tested, so lighter ding than the untested has() on the 7.5 anchor. r1 (8.5): 53 assertions, NaN capacity + message-content throw tests, size-tracking suite; ding: JSON.stringify fallback equality. r2 (8.0): exact-error-type throw tests; dings: no NaN test, detach leaves stale pointers. r3 (7.5): leanest API but assertThrows ignores its msgFragment param and passes on any exception (throw tests validate nothing about error type), plus a leftover confused comment in a test. JSDoc honest in all three."
+    },
+    "C2_rateLimiter": {
+      "turns": [
+        9,
+        9,
+        9
+      ],
+      "avgTurns": 9.0,
+      "cost": [
+        0.1745,
+        0.129,
+        0.1345
+      ],
+      "avgCost": 0.146,
+      "outputTokens": [
+        6944,
+        4644,
+        4872
+      ],
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCounts": [
+        7,
+        8,
+        8
+      ],
+      "perRunQuality": [
+        8,
+        8.5,
+        6
+      ],
+      "qualityScore": 8,
+      "qualityNotes": "C2 median 8.0 (runs: 8.0 / 8.5 / 6.0). r2 best: deterministic exact-assertion time tests with zero sleeps (via Date.now monkeypatch+try/finally, not a proper injectable now() seam) plus Number.isFinite guards and throw-path tests — fixes both 8.5-anchor residuals but swaps in a global-stub hack and one latent strict-equality flake under the real clock. r1 solid (isFinite guards, typed throw tests, clean API) but keeps a real 120ms sleep with tolerance assertions — no clock seam. r3 regresses to the v1-C2 hole: bare <=0 validation lets NaN/Infinity poison the bucket permanently, AND its sync test runner never awaits its two async timing tests, so their pass status is fake (counted passed before assertions run); only its typed throw-path tests keep it above v1's 5.5. Universal residual across all three runs: consume(tokens>capacity) is silently false forever and undocumented; none test NaN/Infinity inputs. No scope creep anywhere (r2's public readonly rate/capacity is the only extra surface). Pattern: the injectable-clock-seam lesson from the tuned baseline did not consistently transfer — 1 of 3 runs achieved determinism, 0 of 3 via a real seam."
+    },
+    "C3_eventEmitter": {
+      "turns": [
+        6,
+        7,
+        15
+      ],
+      "avgTurns": 9.3,
+      "cost": [
+        0.157,
+        0.1772,
+        0.241
+      ],
+      "avgCost": 0.1917,
+      "outputTokens": [
+        6610,
+        7434,
+        8931
+      ],
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCounts": [
+        13,
+        21,
+        7
+      ],
+      "perRunQuality": [
+        8.5,
+        6.5,
+        8.5
+      ],
+      "qualityScore": 8.5,
+      "qualityNotes": "C3 median 8.5 (r1 8.5, r2 6.5, r3 8.5). r1/r3 use the robust Entry{original,wrapper} per-event design: correct on every probe AND every corner (duplicate once, cross-event once), zero scope creep — held under 9.0 only because each tests just one direction of mid-dispatch mutation (r1 add-during, r3 removal-during) and neither tests re-entrancy, vs the v1 anchor that tested everything; all three runs retain the historical Record<string,unknown> interface-rejection ding (r1 even comments on it without fixing). r2 is the cautionary tale: a global Map<original,wrapper> for once bookkeeping means duplicate once(fn) or once(fn) on two events leaves an unremovable wrapper that refires forever and defeats off() — contradicting its own JSDoc — while its otherwise best-in-class 21-assert suite (only run testing re-entrant emit) never touches those paths. Pattern: forge reliably nails the probed danger zones and restraint (no extra API in any run), but wrapper-bookkeeping data-structure choice is the remaining variance axis, and self-test coverage of snapshot/aliasing corners is inconsistent across runs."
+    }
+  },
+  "platformTasks": {
+    "C4_kotlinRateLimiter": {
+      "turns": 5,
+      "cost": 0.1307,
+      "outputTokens": 4411,
+      "compilesClean": true,
+      "testsPassed": true,
+      "qualityScore": 7.5,
+      "dings": [
+        "No injectable clock seam — tests use real Thread.sleep(100/200) with wide tolerance bands (5.0..15.0 for expected ~10), the precise defect that separated the 8.5 tuned-C2 anchor (deterministic exact assertions) from the 5.5 v1-C2 anchor; timing-jitter flakiness risk is real",
+        "consume(tokens > burstCapacity) is silently false forever — never documented as unsatisfiable and never tested (same class of ding as v1 C2, though the generic 'false when insufficient' doc makes it milder here)",
+        "Unrequested thread-safety (@Synchronized) is mild scope creep — the prompt (mirroring C2) never asked for it; honest but unasked-for surface per rubric",
+        "Infinity slips through validation: rate=POSITIVE_INFINITY and burstCapacity=POSITIVE_INFINITY both pass require(); no Infinity tests",
+        "assertThrows catches bare Exception rather than IllegalArgumentException, so throw-path tests would pass on any exception type"
+      ]
+    },
+    "C5_swiftLruCache": {
+      "turns": 8,
+      "cost": 0.4166,
+      "outputTokens": 16467,
+      "compilesClean": true,
+      "testsPassed": true,
+      "qualityScore": 6.5,
+      "dings": [
+        "Retain-cycle memory leak — the exact Swift danger zone the rubric names: LRUNode holds STRONG prev and strong next, so every adjacent node pair is a strong reference cycle; remove() nils links on eviction, but clear() only resets the sentinels (head.next=tail, tail.prev=head) leaving the interior chain n1<->n2<->... mutually retained — every clear() with >=2 entries leaks all nodes, and cache deinit leaks the whole chain the same way; a long-lived cache calling clear() periodically leaks unboundedly (LRUCache.swift:13-14, 166-171)",
+        "The leak directly contradicts clear()'s own doc comment ('iterates the dictionary to release references' — the node chain is never released), echoing the untuned-C3 'contradicts its own JSDoc' pattern at lower severity",
+        "None of the 41 tests probe deallocation (a weak-reference-goes-nil-after-clear test is feasible in the file-runner setup), so the broken case is exactly the one the suite never touches",
+        "Reference-type choice (final class) and the sentinel-forced Key?/Value? optionality are undocumented rationale — rubric asks for the value-vs-reference decision to be stated",
+        "Minor unrequested API surface: public count and public capacity beyond the requested get/put/clear (mild; both tested)"
+      ]
+    },
+    "tierQuality": 7,
+    "tierNotes": "Platform tier (C4 Kotlin + C5 Swift): task 7.0 (mean of c4=7.5, c5=6.5). C4 (7.5): correct token-bucket semantics on a monotonic System.nanoTime base, idiomatic require() that incidentally rejects NaN, throw-path tests present, capacity-cap tested, tight API restraint; held back by no injectable clock seam (real Thread.sleep tests with ±5-token tolerance — the 8.5-vs-5.5 anchor differentiator), undocumented+untested consume(>capacity) forever-false, Infinity passing validation, and mild unrequested @Synchronized scope creep (claim is honest, synchronization is real). C5 (6.5): functionally flawless LRU (promote-on-get/update, sentinel DLL, capacity-1, clear-reuse) with excellent 41-assertion danger-zone suite and idiomatic Swift API, but commits the rubric's named Swift sin: strong prev AND next pointers make every adjacent node pair a retain cycle — clear() only relinks the sentinels, so clear() with >=2 entries and cache deinit both leak the entire node chain, contradicting clear()'s own 'release references' doc; the suite never probes deallocation. Pattern vs anchors: forge continues to nail observable semantics and throw-path/danger-zone functional coverage but misses the per-platform resource/determinism seam (no clock injection in Kotlin, no weak back-pointer in Swift) — the invisible-to-green-tests defect class."
+  },
+  "overallQuality": {
+    "score": 7.88,
+    "basis": "Equal-weight mean of 4 graded units matching the historical tuned-baseline basis: C1 task score 8.0 (median of 8.5/8.0/7.5), C2 task score 8.0 (median of 8.0/8.5/6.0; skeptic upheld c2_r3 at 6.0 with no adjustment), C3 task score 8.5 (median of 8.5/6.5/8.5), simple-tier score 7.0 (restraint-weighted; s1 skeptic upheld at 9.5). Platform tier (C4 7.5, C5 6.5, tier 7.0) reported separately, excluded from headline per instructions. (8.0+8.0+8.5+7.0)/4 = 7.875.",
+    "strengths": [
+      "Observable-semantics correctness is now the norm on complex tasks: all 3 C1 runs use a genuine O(1) sentinel DLL with correct promotion/eviction on every adversarial probe, and 2 of 3 C3 runs use the structurally correct Entry{original,wrapper} per-event design that handles duplicate-once and cross-event-once aliasing (the exact bug class that sank untuned C3 at 5.0)",
+      "Throw-path testing — a residual gap even on the 8.5 tuned-C2 anchor — is now present in every C1/C2 run and in the Kotlin C4 run, including error-type and message-content assertions in the best runs",
+      "NaN/Infinity input validation (Number.isFinite) landed in 2 of 3 C2 runs and incidentally in Kotlin via require(rate > 0.0), closing the historical v1-C2 poisoning hole in most runs",
+      "API restraint on complex tasks is strong: zero unrequested methods in any C3 run, near-zero in C2; extra surface elsewhere is minor (size/capacity getters) and always tested",
+      "Danger-zone test coverage is dense and real where it exists: 53 assertions on C1 r1, a 41-assertion Swift suite, and C3 r3's mid-dispatch-removal ordering test — the strongest single adversarial test across all runs",
+      "S1 (9.5) is the restraint ideal: single-turn inline answer fixing the exact historical punctuation/case failure, honest edge docs, no files, no scope creep"
+    ],
+    "weaknesses": [
+      "The injectable clock seam — the defining lesson of the 8.5 tuned-C2 anchor — did not transfer: 0 of 4 timing-dependent artifacts (C2 x3, C4) used a real now() seam; only c2_r2 achieved determinism, via a global Date.now monkeypatch with a latent strict-equality flake, while c2_r3 and C4 rely on real sleeps with tolerance bands",
+      "High run-to-run variance with a low-tail failure mode each complex task: c2_r3 (6.0) regresses to the full v1 NaN/Infinity poisoning hole plus a sync runner that fake-passes its two async timing tests; c3_r2 (6.5) has a global once-wrapper map making listeners refire forever, contradicting its own JSDoc",
+      "Simple-tier restraint regression: S2 and S3 both wrote unrequested test files against explicit no-tests prompts (S3's thinking acknowledged the boundary then crossed it), plus unrequested size/.cancel()/validation API and 14 turns of self-inflicted ESM churn on S2",
+      "Platform-specific resource/determinism seams are the invisible-to-green-tests blind spot: Swift C5 commits the rubric's named sin (strong prev+next pointers → retain cycles; clear() and deinit leak the entire node chain, contradicting clear()'s own doc) and none of its 41 tests probe deallocation",
+      "The consume(tokens>capacity) silently-false-forever, undocumented residual persists in all 3 C2 runs and C4 — a v1-era ding never addressed anywhere",
+      "Historical dings acknowledged but not fixed: all 3 C3 runs keep the Record<string,unknown> constraint rejecting interface event maps (r1 even comments on it); several test helpers (c1_r3 assertThrows, c2_r2, C4) accept any thrown type, weakening throw-path validation they nominally provide"
+    ],
+    "comparisonToTuned783": "7.88 vs 7.83 — statistical parity, a +0.05 nudge on the identical 4-unit basis (C1, C2, C3, simple tier). Composition shifted rather than improved: complex-task ceilings rose (C1 8.0 vs anchor 7.5 — import side effects and untested surface eliminated; C3 8.5 with two structurally correct runs; C2 median holds 8.0 with NaN guards and throw-path tests that the 8.5 anchor lacked), but two anchor lessons failed to transfer — the injectable clock seam (0/4 real seams vs the anchor's clean implementation) and simple-tier restraint (unrequested test files on 2 of 3 explicit no-tests prompts, dragging the tier to 7.0). Run variance is the real story the headline hides: best runs beat the tuned baseline, worst runs (c2_r3 6.0, c3_r2 6.5) fall to near-v1 territory. Platform tier (7.0, not in either headline) shows the same pattern extends cross-language: correct semantics, missing per-platform seam (no clock injection in Kotlin, retain cycles in Swift). Verdict: at parity overall, better at observable semantics and throw-path coverage, worse at determinism seams and restraint consistency."
+  }
+}

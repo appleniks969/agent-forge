@@ -1,0 +1,188 @@
+{
+  "label": "forge quality-push iter-2 2026-07-04 — six judged identity deltas (no-tests-unless-asked, clock seam, degenerate docs, per-registration wrappers, async-await gate, tsx + Swift/Kotlin platform seams)",
+  "capturedAt": "2026-07-04",
+  "source": "automated — forge run -p --json @ working tree (iter-2 identity), uv tool --reinstall verified live, OAuth token, isolated /tmp/forge-eval-i2, 3 runs per complex task, bare tsc --strict --noEmit gate, tests via npx tsx, 6 semantic probes executed per C3 run",
+  "model": "claude-sonnet-4-6",
+  "tool": "forge",
+  "simpleTasks": {
+    "total": {
+      "cost": 0.2277,
+      "tasks": 3,
+      "avgTurns": 3.0,
+      "tierQuality": 8,
+      "tierNotes": "Simple tier, iter-2. S1 holds the 9.5 ceiling pattern (1 turn, inline, correct, honest). S2 confirms the identity fix landed: 3 turns, one file, no test leakage, zero semantic defects — held under 9.0 only by the 'doubly-linked list' doc falsehood (it is singly-linked) and the unrequested size getter. S3 is the low tail: the no-tests identity fix did not take (unrequested 278-line test file, despite the transcript thinking explicitly deciding against extras), plus a non-callable {call,flush,dispose} API that fails the this-preservation probe, a dead documented now() option, and a schedule doc signature contradicting the implementation — calibrates with the 6.0-6.5 iter-1 low-tail anchors; its saving graces are correct core timing, the NaN/Infinity guard, and genuinely deterministic fake-clock tests. Task score 8.0 reflects two near-ceiling runs weighed down by the restraint-regression tail in S3."
+    },
+    "S1_palindrome": {
+      "turns": 1,
+      "cost": 0.0197,
+      "qualityScore": 9.5,
+      "dings": [
+        "None material; the case/punctuation-insensitive interpretation was chosen without asking, though it is clearly documented"
+      ]
+    },
+    "S2_queue": {
+      "turns": 3,
+      "cost": 0.0494,
+      "qualityScore": 8.8,
+      "dings": [
+        "Header doc claims 'backed by a doubly-linked list' but Node<T> has only next — factually wrong doc in the artifact (honest-docs gate for 9+)",
+        "Unrequested size getter plus _size bookkeeping that exists only to serve it — mild scope creep; also 'all four operations' miscounts the five members"
+      ]
+    },
+    "S3_debounce": {
+      "turns": 5,
+      "cost": 0.1586,
+      "qualityScore": 6,
+      "dings": [
+        "Wrote a 278-line unrequested test file against a no-tests prompt — the exact regression being fixed; thinking block even resolved to stay focused, then shipped tests anyway",
+        "Returns {call, flush, dispose} object instead of a callable debounced function — non-standard API; cannot be used as debounce(handler, 100) event handler",
+        "this not preserved: fire() calls fn(...args) with no apply; context forwarding impossible by construction — explicit rubric probe fails",
+        "Dead option: now = Date.now destructured and documented as 'Injectable clock for testing' but never used anywhere",
+        "JSDoc declares schedule as (ms, cb) but code calls schedule(fire, wait) = (cb, ms) — custom scheduler written from the doc breaks silently",
+        "Unrequested flush()/dispose() extras; loose assertThrows accepts any error, never verifies RangeError type"
+      ]
+    }
+  },
+  "complexTasks": {
+    "total": {
+      "avgCostPerTask": 0.15,
+      "tasks": 3,
+      "runsPerTask": 3,
+      "avgTurns": 6.6
+    },
+    "C1_lruCache": {
+      "turns": [
+        7,
+        7,
+        5
+      ],
+      "avgTurns": 6.3,
+      "cost": [
+        0.1791,
+        0.1916,
+        0.1771
+      ],
+      "avgCost": 0.1826,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCounts": [
+        58,
+        48,
+        49
+      ],
+      "perRunQuality": [
+        8.3,
+        8.2,
+        7.8
+      ],
+      "qualityScore": 8.1,
+      "qualityNotes": "All three runs are semantically defect-free on every adversarial probe (sentinel DLL true O(1), no spurious eviction on update-at-capacity, capacity-1 correct, promotion semantics right, clear fully resets) — no low-tail failures this iteration, a clear improvement over iter-1 C1's spread. What separates them is test rigor and polish: r1/r2 have properly typed throw assertions (better than the iter-1 8.0 anchor's loose helpers) but ship scaffolding residue (r1's abandoned half-test with a dangling 'see note below'; r2's self-correcting 'wait... Actually...' comments); r3 has the cleanest implementation of the three but regresses to untyped assertThrows with test labels falsely claiming RangeError verification. Systemic gaps keeping all runs below 9: none test NaN/Infinity constructor rejection (the impl guards it, danger zone uncovered by the artifacts' own tests), and all three carry the same unrequested public capacity + size getter. Tests are fully deterministic (no timing/sleeps applicable). Verified counts match: 58/48/49 passing assertions, 0 failures."
+    },
+    "C2_rateLimiter": {
+      "turns": [
+        7,
+        7,
+        7
+      ],
+      "avgTurns": 7.0,
+      "cost": [
+        0.1197,
+        0.1286,
+        0.1262
+      ],
+      "avgCost": 0.1248,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCounts": [
+        22,
+        14,
+        22
+      ],
+      "perRunQuality": [
+        8.3,
+        8.5,
+        8.8
+      ],
+      "qualityScore": 8.5,
+      "qualityNotes": "All three runs fixed the iter-1 structural losses: injectable clock seams used for deterministic tests (no sleeps, no global monkeypatch), sync test runners (no async fake-passing possible), consume(n>capacity) behavior documented and tested, throw-path tests present, and strong API restraint across the board. The iter-1 NaN/Infinity loss persists in 2 of 3 runs: r1 and r2 have the identical consume(NaN) poisoning defect (bucket becomes permanently open — a real rate-limiter bypass), matching the tuned-C2 8.5 anchor's residual profile. r3 is the model artifact for validation but self-sabotages with an untyped, weak-substring assertThrows and inaccurate integer/>=1 JSDoc, keeping it just under 9. Low tail is much improved vs iter-1 (6.0 -> 8.3). Distinct constructor shapes across runs (capacity,rate / rate,capacity / options object) — the prompt's 'rate+capacity' ordering is only literally honored by r2 and r3; r1 swaps to (capacity, rate), worth noting for API-contract consistency though not graded as a defect here."
+    },
+    "C3_eventEmitter": {
+      "turns": [
+        7,
+        5,
+        7
+      ],
+      "avgTurns": 6.3,
+      "cost": [
+        0.1528,
+        0.1266,
+        0.1485
+      ],
+      "avgCost": 0.1426,
+      "compilesClean": true,
+      "testsPassed": true,
+      "testCounts": [
+        14,
+        12,
+        11
+      ],
+      "perRunQuality": [
+        8,
+        8.5,
+        7.5
+      ],
+      "qualityScore": 8,
+      "qualityNotes": "Low-variance cluster: all three runs independently converged on the correct entry-per-registration {original, wrapper} list design, which structurally fixes the iter-1 global once-map aliasing bug, and all pass the six execution-verified probes. Two findings gate the scores. (1) A new confirmed shared semantic defect outside the probe set: every run's once() wrapper self-removes via off(event, original), which matches the FIRST entry with that original — so registering the same function with both on() and once() on one event silently destroys the persistent registration and lets the once fire twice ([1,1,2] vs Node's [1,1,2,3], verified against Node reference). Correct fix is wrapper-identity self-removal. This blocks 9+ for all runs but is a much narrower edge than the iter-1 refire-forever bug, so scores sit in the 7.5-8.5 band per the tuned-C2 8.5 anchor (residual semantic holes tolerated at 8.5). (2) All three retain the historical Record<string,unknown> constraint ding — interface event maps rejected, tsc-verified TS2344; a keyof-based or unconstrained-generic signature would have cleared it. Ranking driver: r2 leads on genuine own-test danger-zone coverage (real same-handler cross-event once test) and design rationale, docked slightly for a false 'matching Node.js semantics' claim in off()'s JSDoc; r1 is honest and maximally restrained (exactly 5 tests) but leaves both historical aliasing danger zones untested by its own suite; r3 trails because its cross-event once test is fake coverage (different functions under a same-listener title) plus an inaccurate internal doc comment. Restraint is uniformly good — no listenerCount/removeAllListeners scope creep anywhere, this-chaining the only extra. Probe artifacts: /private/tmp/claude-501/-Users-nikhilsalunke-agent-forge/d3714d6d-6284-4f80-8b0b-ee8d1d42b303/scratchpad/mixprobe.mts and iface.ts."
+    }
+  },
+  "platformTasks": {
+    "C4_kotlinRateLimiter": {
+      "turns": 7,
+      "cost": 0.1758,
+      "compilesClean": true,
+      "testsPassed": true,
+      "qualityScore": 8.5,
+      "dings": [
+        "Infinity guard hole: require(x > 0.0) admits Double.POSITIVE_INFINITY; rate = Infinity with zero elapsed nanos (nanoTime can repeat) yields 0.0 * Infinity = NaN, minOf(capacity, NaN) = NaN, permanently poisoning the bucket — same defect class as iter-1 C2, though narrower",
+        "No throw-path tests despite documented @throws: constructor rejection (rate <= 0, NaN) and consume(0)/consume(-1) are never exercised",
+        "Mild unrequested surface: reset() (getAvailableTokens is borderline but serves as the test observability hook)",
+        "Loose bare-boolean assert helper (assert(name, condition)) rather than value-reporting assertions"
+      ]
+    },
+    "C5_swiftLruCache": {
+      "turns": 12,
+      "cost": 0.4448,
+      "compilesClean": true,
+      "testsPassed": true,
+      "qualityScore": 8,
+      "dings": [
+        "No deinit/allocation probe in the artifact's own 15 tests — the identity now suggests one, and the exact danger zone that sank iter-1 (node deallocation after eviction/clear/cache-deinit) is never verified with a weak reference asserted nil",
+        "clear()'s comment acknowledges recursive-deinit stack overflow on large chains, but the class has no deinit { clear() }, so deallocating a large cache still cascades recursively through strong next links — known, documented, unhandled",
+        "Mild unrequested surface: public count property (echoes the iter-1 C1 size-getter ding)"
+      ]
+    },
+    "tierQuality": 8.25,
+    "tierNotes": "C4 calibrates almost exactly to the forge-tuned C2 anchor (8.5): clock seam done right with deterministic exact assertions, NaN now actually caught by the > 0.0 guards, but an Infinity-admittance hole (0*Inf = NaN poison on same-nanosecond refill with rate=Infinity) and absent throw-path tests are the same residual class. C5 is a genuine structural fix of the iter-1 6.5 leak (weak prev + strong forward chain, verified complete on all probes, clear() frees), with throw-path tests present; it stops short of 8.5+ because the memory-management danger zone is not covered by its own tests (no weak-reference deallocation probe) and cache deinit still risks recursive dealloc that the author demonstrably knew about. No semantic defects found in either artifact on observable-behavior probes; both show good restraint with only mild unrequested surface. Files read completely: /tmp/forge-eval-i2/c4/TokenBucketRateLimiter.kt, /tmp/forge-eval-i2/c4/TokenBucketRateLimiterTest.kt, /tmp/forge-eval-i2/c5/LRUCache.swift, /tmp/forge-eval-i2/c5/LRUCacheTests.swift."
+  },
+  "overallQuality": {
+    "score": 8.18,
+    "basis": "4 equally weighted units: C1 (median of runs 8.3/8.2/7.8 = 8.2), C2 (median 8.3/8.5/8.8 = 8.5), C3 (median 8.0/8.5/7.5 = 8.0), simple tier (8.0, with both skeptic challenges upheld: s1=9.5, s3=6.0). Platform tier (C4 Kotlin 8.5 + C5 Swift 8.0 = 8.25) excluded from headline per instructions. No skeptic adjustment moved any run score, so all medians stand as graded. Headline = (8.2+8.5+8.0+8.0)/4 = 8.175 ≈ 8.18.",
+    "strengths": [
+      "Low-tail collapse on complex tasks: worst complex run this iteration is 7.5 (C3 r3) vs iter-1 lows of 6.0-6.5; no run has a probe-set semantic failure on C1 or C2",
+      "C1 fully semantically clean across all three runs (sentinel DLL, no spurious eviction at capacity, capacity-1 correct) — the iter-1 spread is gone",
+      "C2 structural losses fixed in all runs: injectable clock seams with deterministic no-sleep tests, sync runners, consume(n>capacity) documented and tested, strong API restraint; r3 additionally closes the NaN/Infinity poisoning hole",
+      "C3 runs independently converged on the correct per-registration {original, wrapper} design, structurally eliminating the iter-1 cross-event once-aliasing refire-forever bug",
+      "Platform tier is a genuine step change vs iter-1 7.0: C5 Swift retain-cycle leak structurally fixed (weak prev + strong forward chain, verified on all probes); C4 clock seam done right with exact-value frozen-clock assertions",
+      "Restraint broadly improved: no listenerCount/removeAllListeners creep in C3, tight 4-member API in C2, s1/s2 simple runs held to requested scope"
+    ],
+    "weaknesses": [
+      "New confirmed shared semantic defect in all three C3 runs: once() self-removes by original via off(), so on(f)+once(f) on the same event kills the persistent listener and double-fires the once ([1,1,2] vs Node's [1,1,2,3]) — blocks 9+ across the task",
+      "NaN/Infinity poisoning persists in 2 of 3 C2 runs (consume(NaN) permanently opens the bucket) and reappears as an Infinity-admittance hole in C4 Kotlin — the iter-1 defect class is reduced but not eradicated",
+      "Restraint regression tail in simple tier: s3 shipped a 278-line unrequested test file against a no-tests prompt (after its own thinking decided not to), plus a non-callable {call,flush,dispose} API and lost `this` — 6.0 anchor-level",
+      "Scaffolding/honesty residue ships in artifacts: C1 r1's abandoned half-test with dangling 'see note below', r2's 'wait... Actually' self-correction comments, r3's untyped assertThrows under labels claiming RangeError, C3 r3's fake same-listener test, s2's false 'doubly-linked list' doc",
+      "Recurring unrequested API surface: public capacity + size getter in every C1 run, count in C5, reset() in C4 — the same size-getter ding as iter-1, unlearned",
+      "Danger zones repeatedly left uncovered by artifacts' OWN tests: no NaN/Infinity ctor probes in any C1 run, C3 historical aliasing zones probe-only in r1, no deinit/weak-reference deallocation test in C5, no throw-path tests in C4 despite documented @throws"
+    ],
+    "comparison": "Headline 8.18 vs iter-1 7.88 (+0.30) and tuned 7.83 (+0.35) on the same 4-unit basis — a clear improvement, driven by the disappearance of complex-task low tails (iter-1's 6.0/6.5 C2/C3 failures are now 8.3/7.5 floors) and C2's structural fixes landing in all runs. The gains are partially offset by a new shared C3 once+on interaction defect (narrower than the iter-1 bug it replaced) and one simple-tier restraint regression (s3=6.0). Platform tier separately: 8.25 vs iter-1's 7.0 (+1.25), the largest single-tier gain — the Swift retain-cycle leak and the missing Kotlin clock seam were both structurally fixed, with residuals (Infinity hole, no dealloc probe) now matching the tuned-C2 8.5 residual profile rather than iter-1 failure modes. No unit reached the 9+ bar; the binding constraints are the shared C3 semantic edge, the surviving NaN/Infinity class, and own-test danger-zone coverage gaps."
+  }
+}

@@ -2,28 +2,30 @@
 name: agent-forge-eval
 description: >
   Run structured benchmarks comparing AI coding-agent quality and efficiency
-  across simple and complex coding tasks. Use when evaluating agent-forge after a
-  refactor, when capturing a regression baseline, or when comparing agent-forge
+  across simple and complex coding tasks. Use when evaluating forge after a
+  refactor, when capturing a regression baseline, or when comparing forge
   against another CLI (e.g. claude CLI). Produces per-task metrics (turns, cost,
   tokens, cache hit rate, compile/test pass) and a markdown comparison table.
 compatibility: >
-  Requires agent-forge (agent-forge --prompt --verbose) and optionally claude CLI.
-  Also requires tsc (TypeScript compiler) and npx ts-node for quality checks on
-  complex tasks. Run from any empty directory — the skill creates all files.
+  Requires forge (forge run -p --json) and optionally claude CLI. Also
+  requires tsc (TypeScript compiler) and npx ts-node for quality checks on
+  TypeScript complex tasks; kotlinc for C4; swiftc for C5. Run from any empty
+  directory — the skill creates all files.
 license: MIT
 metadata:
   author: agent-forge
-  version: "1.1"
-  baseline-date: "2026-04-26"
+  version: "2.0"
+  baseline-date: "2026-07-03"
   model: claude-sonnet-4-6
 allowed-tools: Bash Read Write
 ---
 
-# agent-forge eval
+# forge eval
 
-Benchmark suite for agent-forge (and comparable CLIs).  
-Six tasks (3 simple, 3 complex), graded on cost, turns, cache efficiency,
-compile cleanliness, and test passage rate.
+Benchmark suite for forge (and comparable CLIs).
+Eight tasks (3 simple TypeScript, 3 complex TypeScript, 1 Kotlin, 1 Swift),
+graded on cost, turns, cache efficiency, compile cleanliness, and test
+passage rate.
 
 See [task definitions](references/tasks.md) and [known baselines](references/baselines.md).
 
@@ -40,31 +42,44 @@ code-reviewing the other's output.
 Rules:
 1. **Disjoint parent dirs per tool** — never `/tmp/eval/{af,cc}/...`; use
    separate top-level parents instead.
-2. **Sequential execution** — never run two tools on the same task in
-   parallel.
+2. **Sequential execution across tools** — never run two different tools on
+   the same task in parallel. Same-tool variance runs in sibling dirs may run
+   in parallel.
 3. **Memory cleared between runs** — `/tmp/.agent-forge/` and any tool-specific
-   memory locations.
+   memory locations. (forge session logs live in `~/.agent-forge/sessions/`,
+   keyed by cwd; they do not leak between task dirs but can be pruned.)
+4. **Credentials pinned per comparison.** forge's OAuth-token path
+   (`CLAUDE_CODE_OAUTH_TOKEN`) and API-key path (`ANTHROPIC_API_KEY`) place
+   and cache the system prompt differently, which shifts cost and cache
+   metrics. All runs inside one baseline (and both sides of an A/B) MUST use
+   the same credential type; record it in the baseline `source` field.
+5. **Variance runs for complex tasks.** LLM run-to-run variance is large
+   (observed 6–18 turns on the same task). Baselines record complex tasks
+   as the aggregate of **3 runs each**; simple tasks may be single runs.
+   Never conclude a regression or a win from one run.
 
 ```bash
 rm -rf /tmp/.agent-forge/ /tmp/.agent-flow/ ~/.agent-flow/cache 2>/dev/null
-rm -rf /tmp/agent-forge-eval /tmp/claude-cli-eval
-mkdir -p /tmp/agent-forge-eval/{s1,s2,s3,c1,c2,c3}
-mkdir -p /tmp/claude-cli-eval/{s1,s2,s3,c1,c2,c3}
+rm -rf /tmp/forge-eval /tmp/claude-cli-eval
+mkdir -p /tmp/forge-eval/{s1,s2,s3,c4,c5}
+mkdir -p /tmp/forge-eval/{c1,c2,c3}_r{1,2,3}
+mkdir -p /tmp/claude-cli-eval/{s1,s2,s3,c1,c2,c3,c4,c5}
 ```
 
 ---
 
 ## Running tasks
 
-### agent-forge (per task)
+### forge (per task)
 
 ```bash
-cd /tmp/agent-forge-eval/<task> && agent-forge --prompt "<prompt>" --verbose 2>&1 | tee out.txt
+cd /tmp/forge-eval/<task> && forge run --json -p "<prompt>" > out.json 2> out.err
 ```
 
-> The current CLI uses `--prompt` (not `-p`) and `--verbose` (there is no
-> `--debug` flag — `--debug-stream` exists but only emits raw provider
-> events to stderr and is not needed for baseline capture).
+> `--json` writes one run-record JSON to stdout; rendering goes to stderr
+> (`out.err` keeps the transcript for turn-by-turn forensics). The binary is
+> installed via `uv tool install`; after editing forge source, reinstall with
+> `uv tool install --force <repo-root>` or the benchmark measures stale code.
 
 ### claude CLI (per task, for comparison)
 
@@ -72,9 +87,11 @@ cd /tmp/agent-forge-eval/<task> && agent-forge --prompt "<prompt>" --verbose 2>&
 cd /tmp/claude-cli-eval/<task> && claude -p "<prompt>" --output-format json 2>&1 | tee out.txt
 ```
 
-> **Note:** `claude -p --debug "<prompt>"` is wrong — `--debug` optionally
-> consumes the next argument and will eat the prompt. Always put the prompt
-> immediately after `-p`.
+> **Notes:** (1) `claude -p --debug "<prompt>"` is wrong — `--debug`
+> optionally consumes the next argument and will eat the prompt. Always put
+> the prompt immediately after `-p`. (2) Pin the model explicitly
+> (`--model claude-sonnet-4-6`) — the default may resolve to a different
+> family and invalidate cost comparison.
 
 ---
 
@@ -86,28 +103,24 @@ Copy prompts from [references/tasks.md](references/tasks.md).
 
 ## Capturing metrics
 
-### From agent-forge `--verbose` output (`out.txt`)
+### From forge `out.json`
 
-The current renderer prints **one footer line per session** in the format:
-
+```json
+{"sid": "…", "outcome": "ok", "turns": 9,
+ "usage": {"input_tokens": 18, "output_tokens": 3792,
+            "cache_read_tokens": 31313, "cache_write_tokens": 16164},
+ "cost": null, "error": null}
 ```
-[N turn(s)  ·  Xin / Yout  ·  $0.XXXX  ·  ↓Z read  ↑W write  ·  ctx: K%]
-```
 
-| Metric | How to extract |
+| Metric | JSON field |
 |---|---|
-| `turns` | parse `N` from `[N turn(s)` |
-| `cost` | parse the `$X.XXXX` token (after the green ANSI prefix) |
-| `inputTokens` | parse `X` from `Xin / Yout` |
-| `outputTokens` | parse `Y` from `Xin / Yout` |
-| `cacheRead` | parse `Z` from `↓Z read` |
-| `cacheWrite` | parse `W` from `↑W write` |
-| `cacheHitRate` | not exposed; compute as `cacheRead / (cacheRead + inputTokens) * 100` if needed |
-
-> **Per-turn metrics are no longer printed** by `--verbose`. The earlier
-> `API REQUEST (turn N)` blocks belong to a previous CLI version. If you
-> need raw per-turn data, run with `--debug-stream` (writes stream events
-> to stderr), but baseline capture only requires the session footer.
+| `turns` | `turns` |
+| `inputTokens` | `usage.input_tokens` |
+| `outputTokens` | `usage.output_tokens` |
+| `cacheRead` | `usage.cache_read_tokens` |
+| `cacheWrite` | `usage.cache_write_tokens` |
+| `cost` | `cost` when non-null; otherwise compute from usage at $3/$15/$0.30/$3.75 per Mtok (in/out/cache-read/cache-write, sonnet-4-6 rates) |
+| `cacheHitRate` | compute as `cacheRead / (cacheRead + inputTokens) * 100` |
 
 ### From claude CLI JSON output (`out.txt`, `--output-format json`)
 
@@ -123,56 +136,69 @@ The current renderer prints **one footer line per session** in the format:
 
 ## Quality checks (complex tasks only)
 
-After each complex task completes, from the task directory:
+After each complex task completes, from the task directory. **The compile
+gate is bare-toolchain and strict on purpose** — validators that inject
+implicit dependencies (ts-node bundles @types/node) mask exactly the defects
+this gate exists to catch. The agent's self-check and this gate must be
+byte-identical commands.
 
 ```bash
-# TypeScript compile check
-tsc --noEmit
-
-# Run tests (replace <testFile> with the actual filename)
+# C1–C3 (TypeScript): compile gate + tests
+tsc --strict --noEmit *.ts
 npx ts-node <testFile>
+
+# C4 (Kotlin): compile gate + tests
+kotlinc <files>.kt -include-runtime -d out.jar && java -jar out.jar
+
+# C5 (Swift): compile gate + tests
+swiftc <files>.swift -o tests && ./tests
 ```
 
 Record:
-- `compilesClean` — exit code 0 from `tsc --noEmit`
-- `testsPassed` — exit code 0 from `npx ts-node`
+- `compilesClean` — exit code 0 from the compile gate
+- `testsPassed` — exit code 0 from the test run
 - `assertions` — e.g. `14/14` from test output
-- `qualityNotes` — manual notes on API design, TypeScript depth, edge cases
+- `qualityNotes` — manual notes on API design, type-system depth, edge cases
 
-> **Note:** claude CLI `--print` mode cannot write files (permission prompts
-> are suppressed). Complex task output is inline text only — quality must be
-> assessed by reading the `result` field in the JSON.
+Adversarial probes (complex tier; run them, don't assume):
+- **EventEmitter**: does `off(event, fn)` cancel a pending `once(event, fn)`?
+  Do duplicate `on()` registrations both fire? Are listeners added during
+  `emit` deferred to the next emit (snapshot dispatch)?
+- **Rate limiter / LRU**: NaN/Infinity/zero/negative inputs; documented
+  throw paths actually tested; import side effects (does importing the
+  impl or test module execute anything?); named exports present.
+
+> **Note:** claude CLI `--print` mode cannot write files unless invoked with
+> `--allowedTools "Write,Bash,Read,Edit" --permission-mode acceptEdits`.
+> Without those flags, complex task output is inline text only.
 
 ---
 
 ## Saving a new baseline
 
-Once you have metrics for all six tasks, save them as a JSON file:
+Once you have metrics for all tasks, save them as a JSON file:
 
 ```
-eval/baseline/agent-forge-<label>.json
+eval/baseline/forge-<label>.json
 ```
 
 Structure (mirror [assets/baseline-schema.json](assets/baseline-schema.json)):
+complex-task entries carry per-run arrays plus the aggregate, e.g.
+`"turns": [8, 11, 6], "avgTurns": 8.3`. Record the credential type and the
+forge version/commit in `source`.
 
 ```json
 {
-  "label": "agent-forge after <change> — <notes>",
+  "label": "forge after <change> — <notes>",
   "capturedAt": "YYYY-MM-DD",
-  "source": "automated — agent-forge --prompt --verbose, memory cleared and isolated parent dirs per tool",
+  "source": "automated — forge run -p --json @ <commit>, OAuth token, memory cleared, isolated parent dirs, 3 runs per complex task",
   "model": "claude-sonnet-4-6",
-  "tool": "agent-forge",
-  "simpleTasks": {
-    "total": { "cost": 0.0, "tasks": 3, "avgTurns": 0 },
-    "S1_palindrome": { "turns": 0, "cost": 0.0, "inputTokens": 0, "outputTokens": 0, "cacheRead": 0, "cacheWrite": 0, "cacheHitRate": 0.0 },
-    "S2_queue":      { "turns": 0, "cost": 0.0, "inputTokens": 0, "outputTokens": 0, "cacheRead": 0, "cacheWrite": 0, "cacheHitRate": 0.0 },
-    "S3_debounce":   { "turns": 0, "cost": 0.0, "inputTokens": 0, "outputTokens": 0, "cacheRead": 0, "cacheWrite": 0, "cacheHitRate": 0.0 }
-  },
-  "complexTasks": {
-    "total": { "cost": 0.0, "tasks": 3, "avgTurns": 0 },
-    "C1_lruCache":    { "turns": 0, "cost": 0.0, "inputTokens": 0, "outputTokens": 0, "cacheRead": 0, "cacheWrite": 0, "cacheHitRate": 0.0, "compilesClean": true, "testsPassed": true, "testCount": 0, "testPassCount": 0, "qualityScore": 0.0, "qualityNotes": "" },
-    "C2_rateLimiter": { "turns": 0, "cost": 0.0, "inputTokens": 0, "outputTokens": 0, "cacheRead": 0, "cacheWrite": 0, "cacheHitRate": 0.0, "compilesClean": true, "testsPassed": true, "testCount": 0, "testPassCount": 0, "qualityScore": 0.0, "qualityNotes": "" },
-    "C3_eventEmitter":{ "turns": 0, "cost": 0.0, "inputTokens": 0, "outputTokens": 0, "cacheRead": 0, "cacheWrite": 0, "cacheHitRate": 0.0, "compilesClean": true, "testsPassed": true, "testCount": 0, "testPassCount": 0, "qualityScore": 0.0, "qualityNotes": "" }
+  "tool": "forge",
+  "simpleTasks": { "…": "single-run entries as before" },
+  "complexTasks": { "…": "3-run aggregate entries" },
+  "platformTasks": {
+    "C4_kotlinRateLimiter": { "…": "same shape as complex entries" },
+    "C5_swiftLruCache": { "…": "same shape as complex entries" }
   },
   "overallQuality": { "score": 0.0, "basis": "", "strengths": [], "weaknesses": [] }
 }
@@ -182,11 +208,11 @@ Structure (mirror [assets/baseline-schema.json](assets/baseline-schema.json)):
 
 ## Key metrics to watch
 
-| Metric | Pre-DDD target | Red flag |
+| Metric | Target | Red flag |
 |---|---|---|
-| Complex task total cost | ~$0.29 | > $0.50 |
+| Complex task total cost (C1–C3, avg of runs) | ~$0.29 | > $0.50 |
 | Avg turns per complex task | ~7.7 | > 12 |
-| Compile clean | true | false |
+| Compile clean (bare, strict) | true | false |
 | Tests pass | true | false |
 | Quality score | 9.5+ | < 9.0 |
 
