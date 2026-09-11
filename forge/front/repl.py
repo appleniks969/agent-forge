@@ -1,11 +1,13 @@
 """REPL: a renderer plus Asker over SessionHandle.
 
 Layer: front — holds ZERO conversation state; the SessionHandle below the
-UI line owns choreography and the log owns truth. On a TTY, input uses
-prompt_toolkit (history + paste collapse). Tests and pipes inject input_fn
-via asyncio.to_thread. Slash commands dispatch through the shared table;
-/clear closes the session and asks the injected factory for a fresh one.
-Ctrl+C during a turn cancels it; the next prompt waits until the bus drains.
+UI line owns choreography and the log owns truth. On a TTY, one
+PromptSession owns line input AND permission Ask (history + paste
+collapse); Rich output is patched through it so the two never fight
+stdin. Tests and pipes inject input_fn via asyncio.to_thread. Slash
+commands dispatch through the shared table; /clear closes the session
+and asks the injected factory for a fresh one. Ctrl+C during a turn
+cancels it; the next prompt waits until the bus drains.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import asyncio
 import re
 import sys
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TextIO
 
@@ -54,18 +57,24 @@ class _PasteStore:
         return out
 
 
-def _ptk_reader(store: _PasteStore) -> Callable[[str], Awaitable[str]] | None:
-    """A prompt_toolkit reader with bracketed-paste collapse + history, or None
-    when stdin is not a TTY (tests / pipes fall back to the injected input_fn)."""
+def _shared_tty_session(
+    store: _PasteStore,
+) -> tuple[Callable[[str], Awaitable[str]] | None, Callable[..., object] | None]:
+    """One PromptSession plus patch_stdout, or (None, None) off a TTY.
+
+    Line input and ConsoleAsker share this session so a permission prompt
+    cannot deadlock against prompt_toolkit's stdin ownership.
+    """
     if not sys.stdin.isatty():
-        return None
+        return None, None
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.keys import Keys
+        from prompt_toolkit.patch_stdout import patch_stdout
     except ImportError:
-        return None
+        return None, None
 
     kb = KeyBindings()
 
@@ -83,24 +92,34 @@ def _ptk_reader(store: _PasteStore) -> Callable[[str], Awaitable[str]] | None:
         history=FileHistory(str(hist_path)), key_bindings=kb
     )
 
-    async def read(prompt: str) -> str:
+    async def prompt_async(prompt: str) -> str:
         return await session.prompt_async(prompt)
 
-    return read
+    prompt_async._session = session  # keep the session alive
+    return prompt_async, patch_stdout
 
 
 class ConsoleAsker:
-    """The REPL's Asker: y/n prompt on permission Ask, read off-loop."""
+    """The REPL's Asker: y/n on permission Ask, on the same input stack."""
 
     def __init__(self, input_fn: InputFn = input) -> None:
         self._input = input_fn
+        self._prompt_async: Callable[[str], Awaitable[str]] | None = None
+
+    def bind_prompt(
+        self, prompt_async: Callable[[str], Awaitable[str]] | None
+    ) -> None:
+        """Use a shared PromptSession instead of threaded stdlib input()."""
+        self._prompt_async = prompt_async
 
     async def ask(self, question: PermissionQuestion) -> bool:
+        prompt = f"allow {question.tool}? [y/N] "
         try:
-            answer = await asyncio.to_thread(
-                self._input, f"allow {question.tool}? [y/N] "
-            )
-        except EOFError:
+            if self._prompt_async is not None:
+                answer = await self._prompt_async(prompt)
+            else:
+                answer = await asyncio.to_thread(self._input, prompt)
+        except (EOFError, KeyboardInterrupt):
             return False
         return answer.strip().lower() in {"y", "yes"}
 
@@ -125,6 +144,7 @@ async def run_repl(
     cwd: Path | None = None,
     skills: Sequence[SkillMeta] | Callable[[], str] | None = None,
     skill_resolver: Callable[[str], str | None] | None = None,
+    asker: ConsoleAsker | None = None,
 ) -> int:
     out = out if out is not None else sys.stdout
     renderer = Renderer(out=out, pricing=pricing)
@@ -132,63 +152,70 @@ async def run_repl(
     sub = handle.subscribe()
     consumer = asyncio.create_task(_consume(sub, renderer))
 
-    # Input: an explicit input_fn (tests) reads via a thread; otherwise the
-    # real REPL uses prompt_toolkit with paste collapse + history.
+    # Input: an explicit input_fn (tests) reads via a thread; otherwise one
+    # PromptSession owns the TTY for lines and permission Ask, with Rich
+    # output patched through it.
     paste = _PasteStore()
-    ptk_read = _ptk_reader(paste) if input_fn is None else None
+    ptk_prompt, stdout_patch = (
+        (None, None) if input_fn is not None else _shared_tty_session(paste)
+    )
+    if asker is not None:
+        asker.bind_prompt(ptk_prompt)
     fallback = input_fn if input_fn is not None else input
 
     async def read_line() -> str:
-        if ptk_read is not None:
-            return paste.expand(await ptk_read(PROMPT))
+        if ptk_prompt is not None:
+            return paste.expand(await ptk_prompt(PROMPT))
         return await asyncio.to_thread(fallback, PROMPT)
 
     renderer.print_banner(model, commands="/help  /skills  /status  /mcp  /clear  /quit")
-    try:
-        while True:
-            try:
-                line = await read_line()
-            except (EOFError, KeyboardInterrupt):
-                break
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("/"):
-                ctx = commands.CommandContext(
-                    session=handle,
-                    model=model,
-                    mcp=mcp,
-                    cwd=cwd,
-                    skills=skills,
-                    skill_resolver=skill_resolver,
-                )
-                outcome = commands.dispatch(line, ctx)
-                if outcome.text:
-                    print(outcome.text, file=out)
-                if outcome.action is not None:
-                    print(await outcome.action(), file=out)
-                if outcome.quit:
+    patched = stdout_patch() if stdout_patch is not None else nullcontext()
+    with patched:
+        try:
+            while True:
+                try:
+                    line = await read_line()
+                except (EOFError, KeyboardInterrupt):
                     break
-                if outcome.clear:
-                    await handle.close()
-                    await consumer
-                    handle = await make_session()
-                    sub = handle.subscribe()
-                    consumer = asyncio.create_task(_consume(sub, renderer))
-                continue
-            turn = asyncio.create_task(handle.submit(line))
-            try:
-                await turn
-            except KeyboardInterrupt:
-                handle.cancel()
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("/"):
+                    ctx = commands.CommandContext(
+                        session=handle,
+                        model=model,
+                        mcp=mcp,
+                        cwd=cwd,
+                        skills=skills,
+                        skill_resolver=skill_resolver,
+                    )
+                    outcome = commands.dispatch(line, ctx)
+                    if outcome.text:
+                        print(outcome.text, file=out)
+                    if outcome.action is not None:
+                        print(await outcome.action(), file=out)
+                    if outcome.quit:
+                        break
+                    if outcome.clear:
+                        await handle.close()
+                        await consumer
+                        handle = await make_session()
+                        sub = handle.subscribe()
+                        consumer = asyncio.create_task(_consume(sub, renderer))
+                    continue
+                turn = asyncio.create_task(handle.submit(line))
                 try:
                     await turn
-                except Exception:
-                    pass
-            except Exception as exc:  # noqa: BLE001 — shell survives turn failures
-                print(f"forge: {type(exc).__name__}: {exc}", file=out)
-            await handle.wait_until_idle()
-    finally:
-        await handle.close()
-        await consumer
+                except KeyboardInterrupt:
+                    handle.cancel()
+                    try:
+                        await turn
+                    except Exception:
+                        pass
+                except Exception as exc:  # noqa: BLE001 — shell survives turn failures
+                    print(f"forge: {type(exc).__name__}: {exc}", file=out)
+                await handle.wait_until_idle()
+        finally:
+            await handle.close()
+            await consumer
     return 0

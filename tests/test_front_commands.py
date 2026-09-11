@@ -94,6 +94,20 @@ async def test_console_asker_eof_denies() -> None:
     assert await repl.ConsoleAsker(raise_eof).ask(question) is False
 
 
+async def test_console_asker_uses_bound_prompt() -> None:
+    seen: list[str] = []
+
+    async def prompt_async(prompt: str) -> str:
+        seen.append(prompt)
+        return "y"
+
+    asker = repl.ConsoleAsker(lambda _: "n")
+    asker.bind_prompt(prompt_async)
+    question = PermissionQuestion(call_id="c1", tool="t", question="ok?")
+    assert await asker.ask(question) is True
+    assert seen and "allow t?" in seen[0]
+
+
 # --- the REPL shell ---------------------------------------------------------------
 
 
