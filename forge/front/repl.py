@@ -1,11 +1,11 @@
-"""REPL: a stdlib line shell — a renderer plus Asker over SessionHandle.
+"""REPL: a renderer plus Asker over SessionHandle.
 
 Layer: front — holds ZERO conversation state; the SessionHandle below the
-UI line owns choreography and the log owns truth. Input goes through
-asyncio.to_thread so the event loop (and the streaming renderer) stays live
-while the user types; no prompt_toolkit. Slash commands dispatch through
-the shared declarative table; /clear closes the session and asks the
-injected factory for a fresh one.
+UI line owns choreography and the log owns truth. On a TTY, input uses
+prompt_toolkit (history + paste collapse). Tests and pipes inject input_fn
+via asyncio.to_thread. Slash commands dispatch through the shared table;
+/clear closes the session and asks the injected factory for a fresh one.
+Ctrl+C during a turn cancels it; the next prompt waits until the bus drains.
 """
 
 from __future__ import annotations
@@ -106,8 +106,12 @@ class ConsoleAsker:
 
 
 async def _consume(sub: Subscription, renderer: Renderer) -> None:
+    last_dropped = 0
     async for env in sub:
         renderer.handle(env)
+        if sub.dropped > last_dropped:
+            renderer.note_dropped(sub.dropped - last_dropped)
+            last_dropped = sub.dropped
 
 
 async def run_repl(
@@ -172,13 +176,18 @@ async def run_repl(
                     sub = handle.subscribe()
                     consumer = asyncio.create_task(_consume(sub, renderer))
                 continue
+            turn = asyncio.create_task(handle.submit(line))
             try:
-                await handle.submit(line)
+                await turn
+            except KeyboardInterrupt:
+                handle.cancel()
+                try:
+                    await turn
+                except Exception:
+                    pass
             except Exception as exc:  # noqa: BLE001 — shell survives turn failures
                 print(f"forge: {type(exc).__name__}: {exc}", file=out)
-            # One yield lets the consumer drain already-published envelopes
-            # before the next prompt is printed.
-            await asyncio.sleep(0)
+            await handle.wait_until_idle()
     finally:
         await handle.close()
         await consumer

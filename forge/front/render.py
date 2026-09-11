@@ -173,6 +173,13 @@ class Renderer:
             self._flush()
             self._console.print(f"  ! {_first_line(result.content)}", style="dim red")
 
+    def note_dropped(self, n: int) -> None:
+        """Surface bus overflow so a silent drop is visible."""
+        if n <= 0:
+            return
+        self._flush()
+        self._console.print(f"  dropped {n} event(s)", style="dim")
+
     def print_banner(self, model: str, *, commands: str = "") -> None:
         """A solid header panel shown once at REPL start."""
         body = Text()

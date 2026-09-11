@@ -258,3 +258,24 @@ async def test_provider_failure_surfaces_but_log_stays_well_formed(tmp_path: Pat
     assert not handle.state.in_turn
     assert isinstance(store.replay()[-1].body, TurnFinished)
     assert fold(store.replay()) == handle.state
+
+
+async def test_wait_until_idle_sees_turnfinished_first(tmp_path: Path) -> None:
+    handle, _store = handle_for(tmp_path, [mk_out(TextBlock("hello"))])
+    sub = handle.subscribe()
+    seen: list[object] = []
+
+    async def consume() -> None:
+        # Delay before the first get so items sit in the queue; wait_until_idle
+        # must not return until they have been taken (renderer handle() is sync
+        # after get, so empty queue == handled).
+        await asyncio.sleep(0.02)
+        async for env in sub:
+            seen.append(env.body)
+
+    task = asyncio.create_task(consume())
+    await handle.submit("hi")
+    await handle.wait_until_idle()
+    assert any(isinstance(b, TurnFinished) for b in seen)
+    await handle.close()
+    await task

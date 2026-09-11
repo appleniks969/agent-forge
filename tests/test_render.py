@@ -11,12 +11,16 @@ import io
 from forge.front.render import Renderer
 from forge.kernel.events import (
     Envelope,
+    PermissionAsked,
+    PermissionDecided,
+    RetryScheduled,
     TextDelta,
     ThinkingDelta,
     ToolDeclared,
+    ToolFinished,
     TurnFinished,
 )
-from forge.kernel.types import TextBlock, ToolCall, Usage
+from forge.kernel.types import PermissionQuestion, Pricing, TextBlock, ToolCall, ToolResult, Usage
 
 
 def _env(body):
@@ -101,3 +105,58 @@ def test_assistant_block_is_not_double_rendered():
         [TextDelta("answer"), AssistantTurn(blocks=(TextBlock(text="answer"),), usage=Usage())]
     )
     assert text.count("answer") == 1
+
+
+def test_permission_and_retry_lines_render():
+    text = _drive(
+        [
+            PermissionAsked(PermissionQuestion("c1", "Bash", "run ls?")),
+            PermissionDecided(call_id="c1", allowed=True, source="user", reason=""),
+            RetryScheduled(attempt=1, delay_s=0.5, reason="overloaded"),
+        ]
+    )
+    assert "Bash" in text and "run ls?" in text
+    assert "allowed" in text and "user" in text
+    assert "retry 1" in text and "overloaded" in text
+
+
+def test_tool_error_line_renders():
+    text = _drive(
+        [
+            ToolDeclared(ToolCall(id="t1", name="Read", args={"path": "a.py"})),
+            ToolFinished(ToolResult(call_id="t1", content="no such file\nmore", is_error=True)),
+        ]
+    )
+    assert "Read" in text
+    assert "no such file" in text
+    assert "more" not in text  # first line only
+
+
+def test_footer_reports_cache_and_priced_cost():
+    out = io.StringIO()
+    r = Renderer(out=out, color=False, pricing=Pricing(2.0, 10.0, 0.2, 2.5))
+    r.handle(
+        _env(
+            TurnFinished(
+                outcome="ok",
+                usage=Usage(
+                    input_tokens=10,
+                    output_tokens=5,
+                    cache_read_tokens=100,
+                    cache_write_tokens=20,
+                ),
+                cost=None,
+            )
+        )
+    )
+    text = out.getvalue()
+    assert "ok" in text
+    assert "cache 100/20" in text
+    assert "$" in text
+
+
+def test_note_dropped_is_visible():
+    out = io.StringIO()
+    r = Renderer(out=out, color=False)
+    r.note_dropped(3)
+    assert "dropped 3" in out.getvalue()

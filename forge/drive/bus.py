@@ -89,6 +89,17 @@ class Bus:
         if sub in self._subs:
             self._subs.remove(sub)
 
+    async def wait_empty(self) -> None:
+        """Wait until every subscriber queue has delivered what is currently queued.
+
+        Used so a REPL prompt cannot appear before the renderer has handled
+        TurnFinished. Empty bus (no subs, or already drained) returns immediately.
+        """
+        while True:
+            if all(sub._queue.empty() for sub in tuple(self._subs)):
+                return
+            await asyncio.sleep(0)
+
     def close(self) -> None:
         if self._closed:
             return

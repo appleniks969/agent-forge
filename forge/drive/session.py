@@ -179,6 +179,18 @@ class SessionHandle:
     def cancel(self) -> None:
         self._cancel.set()
 
+    async def wait_until_idle(self) -> None:
+        """Wait until no turn holds the lock and subscribers have drained.
+
+        After submit() returns the kernel is idle; this also waits until the
+        renderer (or any other subscriber) has handled already-published
+        envelopes, so the next prompt cannot race the footer.
+        """
+        if self._lock.locked():
+            async with self._lock:
+                pass
+        await self._bus.wait_empty()
+
     async def close(self) -> None:
         if self._closed:
             return

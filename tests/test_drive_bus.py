@@ -124,3 +124,22 @@ async def test_blocked_consumer_woken_by_publish() -> None:
     await asyncio.sleep(0)  # park the consumer on the empty queue
     bus.publish(durable_env(7))
     assert (await asyncio.wait_for(task, 1)).seq == 7
+
+
+async def test_wait_empty_returns_after_drain() -> None:
+    bus = Bus(MemoryStore())
+    sub = bus.subscribe()
+    bus.publish(durable_env(0))
+    bus.publish(durable_env(1))
+    drained: list[int] = []
+
+    async def consume() -> None:
+        async for env in sub:
+            drained.append(env.seq)
+            if len(drained) == 2:
+                break
+
+    task = asyncio.create_task(consume())
+    await bus.wait_empty()
+    await task
+    assert drained == [0, 1]

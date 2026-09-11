@@ -154,7 +154,7 @@ One line per public symbol, grouped by layer in dependency order.
 ### `forge.drive` — drive: the async shell; imports kernel + ports + policy. Modules owned by the drive builder.
 
 ### `forge.drive.bus` — Event bus: per-subscriber bounded queues in front of the EventStore.
-- `class Bus` (methods: close, publish, subscribe)
+- `class Bus` (methods: close, publish, subscribe, wait_empty)
 - `class Subscription` — One subscriber's bounded view of the bus; an AsyncIterator[Envelope]. (methods: close)
 
 ### `forge.drive.driver` — The dumb loop: feed Inputs to the kernel, execute its Effects.
@@ -174,7 +174,7 @@ One line per public symbol, grouped by layer in dependency order.
 
 ### `forge.drive.session` — SessionHandle: the public seam below the UI line.
 - `class PendingAsker` — Asker that parks each question on a future until answer_permission(). (methods: answer, ask)
-- `class SessionHandle` (methods: answer_permission, cancel, close, open, resume, sid, state, submit, subscribe)
+- `class SessionHandle` (methods: answer_permission, cancel, close, open, resume, sid, state, submit, subscribe, wait_until_idle)
 
 ## adapters
 
@@ -275,10 +275,10 @@ One line per public symbol, grouped by layer in dependency order.
 - `skills_index_supplier(roots: Sequence[Path]) -> Callable[[], str | None]` — Supply the skills catalogue: one '<name> — <description>' line per skill.
 
 ### `forge.front.render` — Renderer: a bus subscriber that draws envelopes with Rich.
-- `class Renderer` (methods: handle, print_banner)
+- `class Renderer` (methods: handle, note_dropped, print_banner)
 - `args_brief(args: Mapping[str, Any]) -> str`
 
-### `forge.front.repl` — REPL: a stdlib line shell — a renderer plus Asker over SessionHandle.
+### `forge.front.repl` — REPL: a renderer plus Asker over SessionHandle.
 - `class ConsoleAsker` — The REPL's Asker: y/n prompt on permission Ask, read off-loop. (methods: ask)
 - `async run_repl(make_session: SessionFactory, *, model: str, pricing: Pricing | None = None, input_fn: InputFn | None = None, out: TextIO | None = None, mcp: MCPManager | None = None, cwd: Path | None = None, skills: Sequence[SkillMeta] | Callable[[], str] | None = None, skill_resolver: Callable[[str], str | None] | None = None) -> int`
 
