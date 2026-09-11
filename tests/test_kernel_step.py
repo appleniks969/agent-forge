@@ -371,3 +371,22 @@ def test_duplicate_tool_call_ids_deduped_not_wedged() -> None:
     s3 = step(s2.state, ToolOutcome(ToolResult("c1", "alpha")), policy)
     assert any(isinstance(e, CallModel) for e in s3.effects)
     assert_matched_pairs(s3.state)
+
+
+
+def test_empty_compaction_keeps_window() -> None:
+    policy = SimPolicy(
+        compact_when=lambda s: s.summary is None and len(s.messages) >= 3
+    )
+    s1 = start_turn(policy)
+    s2 = step(s1.state, ModelResponded(mk_out(C1), s1.effects[0].request), policy)
+    s3 = step(s2.state, ToolOutcome(ToolResult("c1", "data")), policy)
+    call = s3.effects[0]
+    kept = s3.state.messages
+    empty = mk_out(usage=Usage(5, 3))
+    s4 = step(s3.state, ModelResponded(empty, call.request), policy)
+    assert not any(isinstance(e, Compacted) for e in s4.events)
+    assert s4.state.messages == kept
+    assert s4.state.summary is None
+    nxt = s4.effects[0]
+    assert isinstance(nxt, CallModel) and nxt.purpose == "turn"

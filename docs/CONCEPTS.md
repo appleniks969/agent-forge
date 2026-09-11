@@ -206,6 +206,10 @@ One line per public symbol, grouped by layer in dependency order.
 - `parse_mcp_server_spec(spec: str) -> MCPServerConfig` — Parse one --mcp-server value: 'name=command [args...]' (args shell-tokenised).
 - `scrub_env(host: Mapping[str, str], declared: Mapping[str, str]) -> dict[str, str]` — Child env = allowlisted host vars + config-declared vars, nothing else.
 
+### `forge.adapters.redact` — Secret-pattern redactor for rewrite-before-append on the session log.
+- `redact_text(text: str) -> str`
+- `secret_redactor(event: Event) -> Event` — Default JsonlStore redactor: mask common credential patterns.
+
 ### `forge.adapters.skills` — Skill discovery + the Skill tool: load on-demand instruction bodies by name.
 - `@dataclass SkillMeta(name: str, description: str, path: Path)` — Frontmatter-only view of one skill — cheap to produce, no body read.
 - `class SkillTool` — Load a skill body (action 'get') or the catalog (action 'list'). (methods: run)

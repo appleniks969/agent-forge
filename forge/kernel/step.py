@@ -189,7 +189,12 @@ def _on_model(state: SessionState, inp: ModelResponded, policy: Policy) -> Step:
         return Step(state, (), ())
     b = _Build(state)
     if inp.request.purpose == "compaction":
-        b.emit(Compacted(summary=inp.output.text, first_kept_seq=0, usage=inp.output.usage))
+        summary = inp.output.text
+        if not summary.strip():
+            # Empty summary would wipe the window via apply_compaction; skip
+            # the event so the live messages survive and fold stays honest.
+            return _continue(b, policy, allow_compaction=False)
+        b.emit(Compacted(summary=summary, first_kept_seq=0, usage=inp.output.usage))
         # One compaction per pressure crossing: don't re-offer it this round.
         return _continue(b, policy, allow_compaction=False)
 

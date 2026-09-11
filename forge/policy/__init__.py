@@ -120,6 +120,8 @@ class StandardPolicy:
         )
 
     def judge(self, call: ToolCall, effects: Effects) -> Verdict:
+        if effects == Effects(0):
+            effects = _guard.FULL_CAUTION
         return self._chain.judge(call, effects, self._ws_root)
 
     def should_compact(self, state: SessionState) -> bool:

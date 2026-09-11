@@ -85,6 +85,34 @@ class PathTool:
         return ToolResult("", f"read {args['path']}")
 
 
+class NestedPathTool:
+    spec = ToolSpec(
+        name="read_many",
+        description="read several paths",
+        params={
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string", "format": "path"},
+                },
+                "nested": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "format": "path"}},
+                },
+            },
+        },
+        effects=Effects.READ_PATH,
+    )
+
+    def __init__(self) -> None:
+        self.seen: list[Mapping[str, Any]] = []
+
+    async def run(self, args: Mapping[str, Any], ctx: ToolCtx) -> ToolResult:
+        self.seen.append(args)
+        return ToolResult("", "ok")
+
+
 class RaisingTool:
     spec = ToolSpec(name="boom", description="raises", params={"type": "object"})
 
@@ -214,3 +242,26 @@ def test_sanitize_and_redact_helpers() -> None:
 
 def test_validate_args_empty_schema_accepts_anything() -> None:
     assert validate_args({}, {"whatever": object()}) == []
+
+
+async def test_nested_and_array_paths_are_contained(tmp_path: Path) -> None:
+    tool = NestedPathTool()
+    ex = executor(tmp_path, tool)
+    result = await ex.execute(
+        call("read_many", {"files": ["a.txt"], "nested": {"path": "b.txt"}}),
+        asyncio.Event(),
+    )
+    assert not result.is_error
+    assert tool.seen[0]["files"] == [str((tmp_path / "a.txt").resolve())]
+    assert tool.seen[0]["nested"]["path"] == str((tmp_path / "b.txt").resolve())
+
+
+async def test_nested_escape_is_error(tmp_path: Path) -> None:
+    tool = NestedPathTool()
+    ex = executor(tmp_path, tool)
+    result = await ex.execute(
+        call("read_many", {"files": ["../../etc/passwd"]}),
+        asyncio.Event(),
+    )
+    assert result.is_error and "WorkspaceEscape" in result.content
+    assert tool.seen == []

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Literal
 
 from forge.adapters.jsonl_store import JsonlStore, latest_sid, session_summaries
+from forge.adapters.redact import secret_redactor
 from forge.adapters.mcp.manager import (
     MCPManager,
     MCPServerConfig,
@@ -281,7 +282,9 @@ def build_session(
         max_turns=settings.max_turns,
     )
     sid = sid if sid is not None else uuid.uuid4().hex
-    store = JsonlStore(settings.sessions_root, sid, cwd=str(settings.ws_root))
+    store = JsonlStore(
+        settings.sessions_root, sid, cwd=str(settings.ws_root), redactor=secret_redactor
+    )
     executor = ToolExecutor(src, ws)
     factory = SessionHandle.resume if resume else SessionHandle.open
     return factory(

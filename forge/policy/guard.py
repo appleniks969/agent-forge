@@ -31,6 +31,10 @@ from forge.kernel.types import (
 # A guard returns None to abstain; a Verdict to weigh in.
 Guard = Callable[[ToolCall, Effects, PurePath], "Verdict | None"]
 
+# Unknown / undeclared tools: treat as the most dangerous set so every
+# guard observes and EXTERNAL forces Ask instead of falling through to Allow.
+FULL_CAUTION = Effects.WRITE_PATH | Effects.EXEC | Effects.EXTERNAL
+
 
 @dataclass(frozen=True)
 class GuardChain:
@@ -116,9 +120,44 @@ _PATH_KEYS = (
     "target",
     "dir",
     "directory",
+    "files",
+    "paths",
+    "sources",
 )
 _DENY_PREFIXES = ("/etc", "/usr", "/bin", "/sbin", "/boot", "/sys", "/proc")
 _DENY_SEGMENTS = frozenset({".ssh", ".aws", ".gnupg"})
+
+
+def _iter_path_strings(value: object, *, keyed: bool = False) -> list[str]:
+    """Walk args for path-shaped strings, including nested objects and arrays."""
+    found: list[str] = []
+    if isinstance(value, str):
+        if keyed and value:
+            found.append(value)
+        return found
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found.extend(_iter_path_strings(item, keyed=keyed or key in _PATH_KEYS))
+        return found
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            found.extend(_iter_path_strings(item, keyed=keyed))
+        return found
+    return found
+
+
+def _path_denied(value: str, ws_root: PurePath) -> str | None:
+    expanded = os.path.expanduser(value)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(str(ws_root), expanded)
+    normalized = os.path.normpath(expanded)
+    for prefix in _DENY_PREFIXES:
+        if normalized == prefix or normalized.startswith(prefix + "/"):
+            return f"write to {prefix} is denied"
+    for segment in normalized.split(os.sep):
+        if segment in _DENY_SEGMENTS:
+            return f"write into {segment} is denied"
+    return None
 
 
 def sensitive_path_guard(
@@ -126,20 +165,10 @@ def sensitive_path_guard(
 ) -> Verdict | None:
     if Effects.WRITE_PATH not in effects:
         return None
-    for key in _PATH_KEYS:
-        value = call.args.get(key)
-        if not isinstance(value, str) or not value:
-            continue
-        expanded = os.path.expanduser(value)
-        if not os.path.isabs(expanded):
-            expanded = os.path.join(str(ws_root), expanded)
-        normalized = os.path.normpath(expanded)
-        for prefix in _DENY_PREFIXES:
-            if normalized == prefix or normalized.startswith(prefix + "/"):
-                return Deny(f"write to {prefix} is denied")
-        for segment in normalized.split(os.sep):
-            if segment in _DENY_SEGMENTS:
-                return Deny(f"write into {segment} is denied")
+    for path in _iter_path_strings(dict(call.args), keyed=False):
+        reason = _path_denied(path, ws_root)
+        if reason:
+            return Deny(reason)
     return None
 
 
@@ -154,6 +183,8 @@ _STANDARD_CHAIN = GuardChain(STANDARD_GUARDS)
 
 def judge(call: ToolCall, effects: Effects, ws_root: PurePath) -> Verdict:
     """Judge one call with the standard guard set."""
+    if effects == Effects(0):
+        effects = FULL_CAUTION
     return _STANDARD_CHAIN.judge(call, effects, ws_root)
 
 

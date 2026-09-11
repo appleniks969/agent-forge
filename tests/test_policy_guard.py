@@ -235,4 +235,15 @@ def test_standard_policy_judges_with_ws_root() -> None:
     )
     assert isinstance(policy.judge(call(name="srv__x"), Effects.EXTERNAL), Ask)
     assert policy.judge(call(name="read", path="a.py"), Effects.READ_PATH) == Allow()
-    assert policy.judge(call(), Effects(0)) == Allow()  # unknown tool, no effects
+    assert isinstance(policy.judge(call(), Effects(0)), Ask)  # unknown tool: full caution
+    assert isinstance(judge(call(), Effects(0), WS), Ask)
+
+
+def test_nested_sensitive_path_is_denied() -> None:
+    nested = call(
+        name="write",
+        files=["ok.txt", "/etc/shadow"],
+    )
+    assert isinstance(sensitive_path_guard(nested, Effects.WRITE_PATH, WS), Deny)
+    deep = call(name="write", dest={"path": "/etc/crontab"})
+    assert isinstance(sensitive_path_guard(deep, Effects.WRITE_PATH, WS), Deny)

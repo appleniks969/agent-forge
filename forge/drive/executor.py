@@ -6,7 +6,8 @@ invalid arguments, workspace escapes, and tool exceptions all become error
 ToolResults. Tools resolve through a ToolSource AT CALL TIME — there is no
 frozen tool table, so an MCP reconnect that swaps server tools is visible
 to the very next effects_of()/execute(). Containment is executor-level:
-every top-level schema property with format == "path" is resolved through
+every schema property with format == "path" (including nested objects
+and array items) is resolved through
 the injected Workspace BEFORE run(), so forgetting containment is
 impossible, including for third-party tools. Output truncation has exactly
 one knob: output_cap_bytes. Error sanitization (class-name prefix, $HOME
@@ -132,15 +133,23 @@ class ToolExecutor:
         # The executor owns the call_id stamp: tools cannot mislabel results.
         return ToolResult(call.id, self._cap_output(result.content), is_error=result.is_error)
 
+    def _contain_value(self, schema: Mapping[str, Any], value: Any) -> Any:
+        if schema.get("format") == "path" and isinstance(value, str):
+            return str(self._ws.resolve(value))
+        if isinstance(value, list) and isinstance(schema.get("items"), Mapping):
+            item_schema = schema["items"]
+            return [self._contain_value(item_schema, item) for item in value]
+        if isinstance(value, Mapping) and (
+            "properties" in schema or schema.get("type") == "object"
+        ):
+            return self._contain(schema, value)
+        return value
+
     def _contain(self, schema: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
         out = dict(args)
         for name, prop in schema.get("properties", {}).items():
-            if (
-                isinstance(prop, Mapping)
-                and prop.get("format") == "path"
-                and isinstance(out.get(name), str)
-            ):
-                out[name] = str(self._ws.resolve(out[name]))
+            if name in out and isinstance(prop, Mapping):
+                out[name] = self._contain_value(prop, out[name])
         return out
 
     def _cap_output(self, content: str) -> str:
