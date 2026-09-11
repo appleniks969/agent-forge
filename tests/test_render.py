@@ -19,6 +19,7 @@ from forge.kernel.events import (
     ToolDeclared,
     ToolFinished,
     TurnFinished,
+    TurnStarted,
 )
 from forge.kernel.types import PermissionQuestion, Pricing, TextBlock, ToolCall, ToolResult, Usage
 
@@ -160,3 +161,20 @@ def test_note_dropped_is_visible():
     r = Renderer(out=out, color=False)
     r.note_dropped(3)
     assert "dropped 3" in out.getvalue()
+
+
+def test_successful_tool_collapses_to_name():
+    text = _drive(
+        [
+            ToolDeclared(ToolCall(id="t1", name="Read", args={"path": "a.py"})),
+            ToolFinished(ToolResult(call_id="t1", content="file contents here", is_error=False)),
+        ]
+    )
+    assert "Read" in text
+    assert "file contents here" not in text
+    assert "✓" in text
+
+
+def test_waiting_indicator_on_turn_started():
+    text = _drive([TurnStarted(turn=1)])
+    assert "…" in text or "..." in text

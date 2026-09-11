@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from forge.adapters.jsonl_store import session_summaries
 from forge.adapters.mcp.manager import MCPManager
 from forge.drive.session import SessionHandle
 from forge.front import memory
@@ -40,6 +41,8 @@ class CommandContext:
     # skill_resolver: maps a skill name to its full body text (or None if the
     # name is not a skill). Drives the '/<name> [args]' run-a-skill dispatch.
     skill_resolver: Callable[[str], str | None] | None = None
+    # sessions_root: JsonlStore root for /sessions; None hides the listing.
+    sessions_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +166,37 @@ def _skills(ctx: CommandContext, args: str) -> CommandOutcome:
     return CommandOutcome(text=_render_skills(ctx.skills))
 
 
+def _format_age(seconds: float) -> str:
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
+
+
+def _sessions(ctx: CommandContext, args: str) -> CommandOutcome:
+    """Read-only session list (same store as `forge sessions`)."""
+    import time
+
+    root = ctx.sessions_root
+    if root is None:
+        return CommandOutcome(text="sessions: no sessions root configured")
+    all_dirs = args.strip() == "all"
+    cwd = None if all_dirs or ctx.cwd is None else str(ctx.cwd)
+    rows = session_summaries(root, cwd=cwd)
+    if not rows:
+        return CommandOutcome(text="no sessions yet")
+    now = time.time()
+    lines = []
+    for r in rows:
+        age = _format_age(now - r["updated_at"])
+        prompt = r["prompt"] or "(no prompt)"
+        lines.append(f"{r['sid'][:12]}  {age:>8}  {prompt}")
+    return CommandOutcome(text="\n".join(lines))
+
+
 def _remember(ctx: CommandContext, args: str) -> CommandOutcome:
     text = args.strip()
     if not text:
@@ -202,9 +236,15 @@ COMMANDS: tuple[Command, ...] = (
     Command("mcp", "show MCP server status; '/mcp reconnect <name>' restores one", _mcp),
     Command("skills", "list available skills; run one with '/<name> [args]'", _skills),
     Command("remember", "save a learning to project memory ('/remember <text>')", _remember),
+    Command("sessions", "list recent sessions in this directory ('/sessions all' for every cwd)", _sessions),
     Command("clear", "drop the conversation and start a fresh session", _clear),
     Command("quit", "exit the shell", _quit),
 )
+
+
+def banner_commands() -> str:
+    """Slash names for the REPL banner, derived from the live table."""
+    return "  ".join(f"/{c.name}" for c in COMMANDS)
 
 
 def dispatch(line: str, ctx: CommandContext) -> CommandOutcome:

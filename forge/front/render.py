@@ -38,6 +38,7 @@ from forge.kernel.events import (
     ToolDeclared,
     ToolFinished,
     TurnFinished,
+    TurnStarted,
 )
 from forge.kernel.types import Pricing, ToolResult
 
@@ -77,17 +78,25 @@ class Renderer:
         self._buf = ""  # text accumulated for the current block
         self._channel: str | None = None  # "think" | "text" — the current block
         self._live: Live | None = None
+        self._tools: dict[str, str] = {}  # call_id -> name, for collapsed finish
+        self._waiting = False
 
     # -- event dispatch ---------------------------------------------------------
 
     def handle(self, env: Envelope) -> None:
         match env.body:
+            case TurnStarted():
+                self._show_waiting()
             case TextDelta(text):
+                self._clear_waiting()
                 self._stream(text, "text")
             case ThinkingDelta(text):
+                self._clear_waiting()
                 self._stream(text, "think")
             case ToolDeclared(call):
+                self._clear_waiting()
                 self._flush()
+                self._tools[call.id] = call.name
                 self._console.print(
                     f"→ {call.name}({args_brief(call.args)})", style="cyan"
                 )
@@ -168,10 +177,25 @@ class Renderer:
 
     # -- discrete lines ---------------------------------------------------------
 
+    def _show_waiting(self) -> None:
+        if self._waiting:
+            return
+        self._waiting = True
+        self._flush()
+        self._console.print("…", style="dim")
+
+    def _clear_waiting(self) -> None:
+        self._waiting = False
+
     def _tool_finished(self, result: ToolResult) -> None:
+        name = self._tools.pop(result.call_id, "")
+        self._flush()
         if result.is_error:
-            self._flush()
             self._console.print(f"  ! {_first_line(result.content)}", style="dim red")
+            return
+        # Success collapses to a name-only check — never dump the body.
+        label = name or result.call_id
+        self._console.print(f"  ✓ {label}", style="dim")
 
     def note_dropped(self, n: int) -> None:
         """Surface bus overflow so a silent drop is visible."""

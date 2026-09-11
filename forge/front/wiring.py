@@ -465,6 +465,7 @@ async def _repl_main(settings: Settings, *, resume_sid: str | None = None) -> in
             skills=lambda: render_skill_catalog(roots),
             skill_resolver=lambda name: resolve_skill(roots, name),
             asker=asker,
+            sessions_root=settings.sessions_root,
         )
     finally:
         if manager is not None:

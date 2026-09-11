@@ -203,3 +203,47 @@ def test_paste_store_expands_markers_in_order():
     b = "\n".join(["b"] * 30)
     m1, m2 = store.marker_for(a), store.marker_for(b)
     assert store.expand(f"{m1} then {m2}") == f"{a} then {b}"
+
+
+
+def test_banner_lists_remember_and_sessions() -> None:
+    line = commands.banner_commands()
+    assert "/remember" in line
+    assert "/sessions" in line
+    for cmd in commands.COMMANDS:
+        assert f"/{cmd.name}" in line
+
+
+def test_dispatch_sessions_lists_prompt(tmp_path: Path) -> None:
+    from forge.adapters.jsonl_store import JsonlStore
+    from forge.kernel.events import UserSubmitted, make_envelope
+
+    root = tmp_path / "sessions"
+    sid = "abc123def4567890"
+    store = JsonlStore(root, sid, cwd=str(tmp_path))
+    store.append(make_envelope(0, sid, UserSubmitted("hello from list")))
+    ctx = commands.CommandContext(
+        session=make_handle(tmp_path, [], sid="sid123"),
+        model="model-x",
+        cwd=tmp_path,
+        sessions_root=root,
+    )
+    text = commands.dispatch("/sessions", ctx).text
+    assert "abc123def456" in text
+    assert "hello from list" in text
+
+
+def test_dispatch_sessions_empty(tmp_path: Path) -> None:
+    ctx = commands.CommandContext(
+        session=make_handle(tmp_path, [], sid="sid123"),
+        model="model-x",
+        cwd=tmp_path,
+        sessions_root=tmp_path / "sessions",
+    )
+    text = commands.dispatch("/sessions", ctx).text
+    assert "no sessions" in text
+
+
+def test_history_path_lives_under_agent_forge() -> None:
+    assert repl.HISTORY_PATH.name == "history"
+    assert repl.HISTORY_PATH.parent.name == ".agent-forge"

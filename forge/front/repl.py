@@ -29,6 +29,7 @@ from forge.front.render import Renderer
 from forge.kernel.types import PermissionQuestion, Pricing
 
 PROMPT = "forge> "
+HISTORY_PATH = Path.home() / ".agent-forge" / "history"
 
 InputFn = Callable[[str], str]
 SessionFactory = Callable[[], Awaitable[SessionHandle]]
@@ -86,7 +87,7 @@ def _shared_tty_session(
         else:
             event.current_buffer.insert_text(data)
 
-    hist_path = Path.home() / ".forge" / "history"
+    hist_path = HISTORY_PATH
     hist_path.parent.mkdir(parents=True, exist_ok=True)
     session: PromptSession[str] = PromptSession(
         history=FileHistory(str(hist_path)), key_bindings=kb
@@ -145,6 +146,7 @@ async def run_repl(
     skills: Sequence[SkillMeta] | Callable[[], str] | None = None,
     skill_resolver: Callable[[str], str | None] | None = None,
     asker: ConsoleAsker | None = None,
+    sessions_root: Path | None = None,
 ) -> int:
     out = out if out is not None else sys.stdout
     renderer = Renderer(out=out, pricing=pricing)
@@ -168,7 +170,7 @@ async def run_repl(
             return paste.expand(await ptk_prompt(PROMPT))
         return await asyncio.to_thread(fallback, PROMPT)
 
-    renderer.print_banner(model, commands="/help  /skills  /status  /mcp  /clear  /quit")
+    renderer.print_banner(model, commands=commands.banner_commands())
     patched = stdout_patch() if stdout_patch is not None else nullcontext()
     with patched:
         try:
@@ -188,6 +190,7 @@ async def run_repl(
                         cwd=cwd,
                         skills=skills,
                         skill_resolver=skill_resolver,
+                        sessions_root=sessions_root,
                     )
                     outcome = commands.dispatch(line, ctx)
                     if outcome.text:
