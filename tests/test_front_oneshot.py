@@ -204,3 +204,71 @@ async def test_json_sink_carries_only_the_record(tmp_path: Path) -> None:
     lines = [line for line in sink.getvalue().splitlines() if line]
     assert len(lines) == 1
     json.loads(lines[0])
+
+
+# --- forge failures CLI -----------------------------------------------------------
+
+
+def test_main_failures_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = run_main(monkeypatch, tmp_path, ["failures"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "no failures" in captured.err
+
+
+def test_main_failures_json_and_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from forge.adapters.jsonl_store import JsonlStore
+    from forge.kernel.events import ToolDeclared, ToolFinished, UserSubmitted, make_envelope
+    from forge.kernel.types import ToolCall, ToolResult
+
+    sessions = tmp_path / "sessions"
+    sid = "cli000000000001"
+    store = JsonlStore(sessions, sid, cwd=str(tmp_path))
+    call = ToolCall(id="c1", name="Bash", args={})
+    store.append(make_envelope(0, sid, UserSubmitted("go")))
+    store.append(make_envelope(1, sid, ToolDeclared(call)))
+    store.append(
+        make_envelope(
+            2, sid, ToolFinished(ToolResult("c1", "FAILED cli_case", is_error=True))
+        )
+    )
+    rc = run_main(monkeypatch, tmp_path, ["failures", "--json"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out)
+    texts = [f["text"] for p in payload["projects"] for f in p["facts"]]
+    assert any("FAILED cli_case" in t for t in texts)
+
+    rc = run_main(monkeypatch, tmp_path, ["failures"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "FAILED cli_case" in captured.out
+    assert f"{sid}:2" in captured.out
+
+
+def test_run_json_keys_unchanged_with_failures_section(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = run_main(
+        monkeypatch, tmp_path, ["run", "--provider", "fake", "-p", "hello", "--json"]
+    )
+    record = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert set(record) == {
+        "sid",
+        "outcome",
+        "turns",
+        "usage",
+        "cost",
+        "error",
+    }
+    assert set(record["usage"]) == {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    }

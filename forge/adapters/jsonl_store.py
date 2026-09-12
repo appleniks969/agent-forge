@@ -262,6 +262,11 @@ def _scan_logs(root: Path) -> dict[str, dict[str, Any]]:
 # -- log reading -----------------------------------------------------------------
 
 
+def read_log(path: Path) -> list[Envelope]:
+    """Replay one session JSONL. Public so folds (failures, eval) share serde."""
+    return _read_log(path)
+
+
 def _read_log(path: Path) -> list[Envelope]:
     if not path.exists():
         return []

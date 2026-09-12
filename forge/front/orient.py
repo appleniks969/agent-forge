@@ -385,3 +385,48 @@ def skills_index_supplier(roots: Sequence[Path]) -> Callable[[], str | None]:
         return header + "\n".join(shown)
 
     return resolve
+
+
+# --- failures (derived fold over session logs) ---------------------------------
+
+
+def failures_supplier(cwd: Path, sessions_root: Path) -> Callable[[], str | None]:
+    """Supply the derived failures section for this project.
+
+    On a cache miss (sessions index, facts, or wiki mtime moved) incrementally
+    folds new envelopes into `.agent-forge/failures.jsonl` and returns the
+    projected wiki. Cheap hits are a three-stat compare. Returns None when
+    the fold is empty so the section vanishes.
+    """
+    cwd = Path(cwd)
+    sessions_root = Path(sessions_root)
+    index_path = sessions_root / "index.v2.json"
+    cache: dict[str, object] = {"key": None, "text": None}
+
+    def _key() -> object:
+        from forge.adapters.failures import cursor_path, facts_path, wiki_path
+
+        return (
+            _mtime_or_none(index_path),
+            _mtime_or_none(facts_path(cwd)),
+            _mtime_or_none(cursor_path(cwd)),
+            _mtime_or_none(wiki_path(cwd)),
+        )
+
+    def resolve() -> str | None:
+        key = _key()
+        if cache["key"] == key:
+            return cache["text"]  # type: ignore[return-value]
+        try:
+            from forge.adapters.failures import read_projection, sync_failures
+
+            sync_failures(sessions_root, cwd)
+            text = read_projection(cwd)
+        except Exception:
+            text = None
+        cache["key"] = _key()
+        cache["text"] = text
+        return text
+
+    return resolve
+

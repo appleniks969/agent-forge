@@ -143,6 +143,7 @@ One line per public symbol, grouped by layer in dependency order.
 - `agents_doc_section(supplier: Callable[[], str | None]) -> SectionThunk` — Project instructions (AGENTS.md/CLAUDE.md). supplier is the I/O seam —
 - `content_digest(text: str) -> str`
 - `environment_section(facts: Callable[[], Mapping[str, str]]) -> SectionThunk` — facts is a supplier (injected by the composition root — policy never
+- `failures_section(supplier: Callable[[], str | None]) -> SectionThunk` — Derived failure lessons from this project's session logs. supplier is
 - `identity_section(text: str = DEFAULT_IDENTITY) -> SectionThunk`
 - `memory_section(supplier: Callable[[], str | None]) -> SectionThunk` — Merged global+project memory. supplier is the injected I/O seam.
 - `repo_map_section(supplier: Callable[[], str | None]) -> SectionThunk` — Git-recency-weighted repo tree. supplier is the injected I/O seam.
@@ -183,11 +184,30 @@ One line per public symbol, grouped by layer in dependency order.
 ### `forge.adapters.anthropic` — AnthropicProvider: the Provider port over the anthropic SDK.
 - `class AnthropicProvider` — Provider over the anthropic SDK; stateless across complete() calls. (methods: complete, info)
 
+### `forge.adapters.failures` — Failure fold: derive lessons from session logs without touching the kernel.
+- `@dataclass FailureFact(id: str, ts: float, kind: Kind, trust: Trust, text: str, derived_from: tuple[str, ...], tool: str | None = None, signature: str = '', cwd: str | None = None, supersedes: str | None = None)` (methods: cite)
+- `append_facts(project: Path, facts: Iterable[FailureFact]) -> int` — Append facts, skipping ids already live. Returns number written.
+- `cursor_path(project: Path) -> Path`
+- `extract_from_envelopes(envelopes: Iterable[Envelope], *, sid: str, cwd: str | None, after_seq: int = -1) -> list[FailureFact]` — Pure fold: envelopes -> new facts for seq > after_seq.
+- `fact_id(kind: str, tool: str | None, signature: str) -> str`
+- `facts_as_dicts(facts: Iterable[FailureFact]) -> list[dict[str, Any]]`
+- `facts_path(project: Path) -> Path`
+- `live_facts(facts: Iterable[FailureFact]) -> list[FailureFact]` — Last write per id, minus ids that a later fact supersedes.
+- `load_cursor(project: Path) -> dict[str, int]`
+- `load_facts(project: Path) -> list[FailureFact]`
+- `project_cwds(sessions_root: Path, fallback: str | None = None) -> list[str]` — Distinct index cwds, plus fallback if it has no sessions yet.
+- `project_markdown(facts: Iterable[FailureFact], *, cap: int = PROJECTION_CAP) -> str`
+- `read_projection(project: Path) -> str | None`
+- `sync_failures(sessions_root: Path, project: Path, *, cwd: str | None = None, all_dirs: bool = False) -> dict[str, int]` — Incrementally fold new envelopes into facts + wiki. Returns counts.
+- `wiki_path(project: Path) -> Path`
+- `write_projection(project: Path, facts: Iterable[FailureFact] | None = None) -> Path`
+
 ### `forge.adapters.jsonl_store` — JsonlStore: fsync'd append-only JSONL EventStore with a sidecar index.
 - `class JsonlStore` — Append-only EventStore over one JSONL file per session. (methods: append, close, next_seq, path, replay, sid)
 - `default_root() -> Path`
 - `latest_sid(root: Path, *, cwd: str | None = None) -> str | None` — Most recently updated session sid, optionally restricted to one cwd.
 - `load_index(root: Path) -> dict[str, dict[str, Any]]` — Read the sidecar index, rebuilding by scan if missing or corrupt.
+- `read_log(path: Path) -> list[Envelope]` — Replay one session JSONL. Public so folds (failures, eval) share serde.
 - `rebuild_index(root: Path) -> dict[str, dict[str, Any]]`
 - `session_summaries(root: Path, *, cwd: str | None = None, limit: int = 20) -> list[dict[str, Any]]` — Recent sessions newest-first: sid, cwd, updated_at, and the first prompt
 
@@ -275,6 +295,7 @@ One line per public symbol, grouped by layer in dependency order.
 
 ### `forge.front.orient` — Orientation readers: file-reading suppliers for the prompt's session sections.
 - `agents_doc_supplier(cwd: Path) -> Callable[[], str | None]` — Supply the project-instructions section.
+- `failures_supplier(cwd: Path, sessions_root: Path) -> Callable[[], str | None]` — Supply the derived failures section for this project.
 - `memory_supplier(cwd: Path) -> Callable[[], str | None]` — Supply the merged global + project memory section.
 - `repo_map_supplier(cwd: Path) -> Callable[[], str | None]` — Supply a git-recency-weighted repository map for large repos.
 - `skills_index_supplier(roots: Sequence[Path]) -> Callable[[], str | None]` — Supply the skills catalogue: one '<name> — <description>' line per skill.

@@ -20,6 +20,7 @@ session ends, so no child process outlives the CLI.
 from __future__ import annotations
 
 import argparse
+import json
 import asyncio
 import os
 import platform as platform_mod
@@ -47,6 +48,7 @@ from forge.drive.session import SessionHandle
 from forge.front import oneshot, repl
 from forge.front.orient import (
     agents_doc_supplier,
+    failures_supplier,
     memory_supplier,
     repo_map_supplier,
     skills_index_supplier,
@@ -57,6 +59,7 @@ from forge.policy import StandardPolicy
 from forge.policy.prompt import (
     agents_doc_section,
     environment_section,
+    failures_section,
     memory_section,
     repo_map_section,
     skills_section,
@@ -278,6 +281,7 @@ def build_session(
             repo_map_section(repo_map_supplier(ws.root)),
             skills_section(skills_index_supplier(roots)),
             memory_section(memory_supplier(ws.root)),
+            failures_section(failures_supplier(ws.root, settings.sessions_root)),
         ),
         max_turns=settings.max_turns,
     )
@@ -357,6 +361,17 @@ def _parser() -> argparse.ArgumentParser:
     sessions.add_argument(
         "--all", action="store_true", help="all directories, not just this one"
     )
+    failures = sub.add_parser(
+        "failures", help="show derived failure lessons for this directory"
+    )
+    failures.add_argument(
+        "--all", action="store_true", help="all directories, not just this one"
+    )
+    failures.add_argument(
+        "--json",
+        action="store_true",
+        help="emit live facts as JSON (subcommand only; does not change `forge run --json`)",
+    )
     return parser
 
 
@@ -384,6 +399,55 @@ def _print_sessions(settings: Settings, *, all_dirs: bool) -> int:
         age = _format_age(now - r["updated_at"])
         prompt = r["prompt"] or "(no prompt)"
         print(f"{r['sid'][:12]}  {age:>8}  {prompt}")
+    return 0
+
+
+
+def _print_failures(settings: Settings, *, all_dirs: bool, as_json: bool) -> int:
+    from forge.adapters.failures import (
+        facts_as_dicts,
+        live_facts,
+        load_facts,
+        project_cwds,
+        project_markdown,
+        read_projection,
+        sync_failures,
+    )
+
+    cwd = str(settings.ws_root)
+    stats = sync_failures(
+        settings.sessions_root, settings.ws_root, cwd=cwd, all_dirs=all_dirs
+    )
+    if as_json:
+        projects = project_cwds(settings.sessions_root, fallback=cwd) if all_dirs else [cwd]
+        payload = {
+            "projects": [
+                {
+                    "cwd": other,
+                    "facts": facts_as_dicts(live_facts(load_facts(Path(other)))),
+                }
+                for other in projects
+            ],
+            **stats,
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    if all_dirs:
+        chunks: list[str] = []
+        for other in project_cwds(settings.sessions_root, fallback=cwd):
+            text = read_projection(Path(other))
+            if text:
+                chunks.append(f"# {other}\n{text}")
+        if not chunks:
+            print("no failures recorded", file=sys.stderr)
+            return 0
+        print("\n\n".join(chunks))
+        return 0
+    text = project_markdown(live_facts(load_facts(settings.ws_root)))
+    if not text.strip():
+        print("no failures recorded", file=sys.stderr)
+        return 0
+    print(text, end="")
     return 0
 
 
@@ -492,6 +556,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = load_settings(args)
         if args.cmd == "sessions":
             return _print_sessions(settings, all_dirs=args.all)
+        if args.cmd == "failures":
+            return _print_failures(
+                settings, all_dirs=args.all, as_json=bool(getattr(args, "json", False))
+            )
         resume_sid = _resolve_resume(args, settings)
         if args.cmd == "run":
             return asyncio.run(

@@ -160,6 +160,13 @@ def skills_section(supplier: Callable[[], str | None]) -> SectionThunk:
     return SectionThunk("skills", Stability.SESSION, supplier)
 
 
+def failures_section(supplier: Callable[[], str | None]) -> SectionThunk:
+    """Derived failure lessons from this project's session logs. supplier is
+    the injected I/O seam — policy never reads the fold files."""
+
+    return SectionThunk("failures", Stability.SESSION, supplier)
+
+
 def _tool_line(spec: ToolSpec) -> str:
     desc = " ".join(spec.description.split())
     label = _effects_label(spec.effects)

@@ -13,6 +13,7 @@ from forge.kernel.types import Stability
 from forge.policy.prompt import (
     PromptAssembler,
     agents_doc_section,
+    failures_section,
     memory_section,
     repo_map_section,
     skills_section,
@@ -23,6 +24,7 @@ BUILDERS: tuple[tuple[str, Callable], ...] = (
     ("repo_map", repo_map_section),
     ("memory", memory_section),
     ("skills", skills_section),
+    ("failures", failures_section),
 )
 
 

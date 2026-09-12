@@ -205,6 +205,27 @@ def _remember(ctx: CommandContext, args: str) -> CommandOutcome:
     return CommandOutcome(text=memory.remember(cwd, text))
 
 
+def _failures(ctx: CommandContext, args: str) -> CommandOutcome:
+    """Show the derived failure fold for this directory."""
+    from forge.adapters.failures import read_projection, sync_failures
+
+    cwd = ctx.cwd if ctx.cwd is not None else Path.cwd()
+    all_dirs = args.strip() == "all"
+    if ctx.sessions_root is not None:
+        sync_failures(ctx.sessions_root, cwd, all_dirs=all_dirs)
+    if all_dirs and ctx.sessions_root is not None:
+        from forge.adapters.failures import project_cwds
+
+        chunks: list[str] = []
+        for other in project_cwds(ctx.sessions_root, fallback=str(cwd)):
+            text = read_projection(Path(other))
+            if text:
+                chunks.append(f"# {other}\n{text}")
+        return CommandOutcome(text="\n\n".join(chunks) if chunks else "no failures recorded")
+    text = read_projection(cwd)
+    return CommandOutcome(text=text if text else "no failures recorded")
+
+
 # Delimiter that frames an injected skill body so the model can tell the loaded
 # instructions apart from the user's own words.
 _SKILL_OPEN = "<skill-instructions>"
@@ -237,6 +258,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("skills", "list available skills; run one with '/<name> [args]'", _skills),
     Command("remember", "save a learning to project memory ('/remember <text>')", _remember),
     Command("sessions", "list recent sessions in this directory ('/sessions all' for every cwd)", _sessions),
+    Command("failures", "show derived failure lessons ('/failures all' for every cwd)", _failures),
     Command("clear", "drop the conversation and start a fresh session", _clear),
     Command("quit", "exit the shell", _quit),
 )
