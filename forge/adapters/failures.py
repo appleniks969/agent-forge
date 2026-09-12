@@ -49,6 +49,14 @@ _REMEMBER_INJECT = re.compile(r"(?i)^remember (to|that)\b")
 _CORRECTION = re.compile(
     r"(?i)^(no\b|don't\b|do not\b|never\b|always\b|use\b|remember\b|stop\b)"
 )
+_TRACEBACK_HDR = re.compile(r"(?i)^traceback \(most recent call last\):\s*$")
+_FILE_FRAME = re.compile(r'^\s*File ".+", line \d+')
+_PYTEST_FAILED = re.compile(r"^FAILED\b")
+_EXC_LINE = re.compile(
+    r"^[A-Za-z_][\w.]*(?:Error|Exception|Failure|Warning)\b"
+)
+_ERROR_COLON = re.compile(r"(?i)\berror:")
+_SIG_WINDOW = 20
 
 
 @dataclass(frozen=True)
@@ -85,9 +93,33 @@ def fact_id(kind: str, tool: str | None, signature: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def _first_line(text: str, *, scrub_remember: bool = True) -> str:
-    line = (text.splitlines() or [""])[0].strip()
-    line = redact_text(line)
+def _pick_error_line(text: str) -> str:
+    """Prefer FAILED / AssertionError / Error: over a traceback header."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    window = lines[:_SIG_WINDOW]
+    for ln in window:
+        if _PYTEST_FAILED.match(ln):
+            return ln
+    picked = ""
+    for ln in window:
+        if _EXC_LINE.match(ln) or _ERROR_COLON.search(ln):
+            picked = ln
+    if picked:
+        return picked
+    for ln in window:
+        if _TRACEBACK_HDR.match(ln) or _FILE_FRAME.match(ln) or set(ln) <= {"^", " "}:
+            continue
+        return ln
+    return window[0]
+
+
+def _first_line(
+    text: str, *, scrub_remember: bool = True, pick_error: bool = False
+) -> str:
+    line = _pick_error_line(text) if pick_error else (text.splitlines() or [""])[0]
+    line = redact_text(line.strip())
     if _INJECTION.search(line) or (scrub_remember and _REMEMBER_INJECT.match(line)):
         return "[redacted-injection]"
     return line[:SIGNATURE_MAX]
@@ -126,7 +158,7 @@ def extract_from_envelopes(
 
         if isinstance(body, ToolFinished) and body.result.is_error:
             tool = tool_names.get(body.result.call_id, "tool")
-            sig = _first_line(body.result.content)
+            sig = _first_line(body.result.content, pick_error=True)
             if env.seq > after_seq:
                 facts.append(
                     FailureFact(

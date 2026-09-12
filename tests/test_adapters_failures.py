@@ -83,6 +83,32 @@ def test_extracts_tool_error_first_line_and_cite() -> None:
     assert fact.id == fact_id("tool_error", "Bash", fact.signature)
 
 
+def test_python_traceback_keeps_assertion_not_header() -> None:
+    sid = "s"
+    content = (
+        "Traceback (most recent call last):\n"
+        '  File "test_app.py", line 5, in test_add_ones\n'
+        "    assert add(1, 1) == 3, \"e2e-add-ones-failed\"\n"
+        "           ^^^^^^^^^^^^^^\n"
+        "AssertionError: e2e-add-ones-failed\n"
+    )
+    facts = extract_from_envelopes(
+        _tool_error_log(sid, content=content), sid=sid, cwd="/ws"
+    )
+    assert facts[0].text == "Bash failed: AssertionError: e2e-add-ones-failed"
+    assert "Traceback" not in facts[0].text
+
+
+def test_compiler_error_colon_beats_preamble() -> None:
+    sid = "s"
+    content = "Compiling...\nerror: expected ';' after expression\n"
+    facts = extract_from_envelopes(
+        _tool_error_log(sid, content=content), sid=sid, cwd="/ws"
+    )
+    assert "expected ';' after expression" in facts[0].text
+    assert "Compiling" not in facts[0].text
+
+
 def test_extracts_turn_aborted_and_denial() -> None:
     sid = "s"
     envs = [
